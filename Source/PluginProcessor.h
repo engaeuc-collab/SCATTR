@@ -11,6 +11,7 @@ struct Sample
     juce::AudioBuffer<float> data;
     double sampleRate = 44100.0;
     int length = 0;
+    float rootNote = -1.f;   // detected pitch as a (fractional) MIDI note, -1 = no clear pitch
     std::vector<std::pair<float, float>> peaks;
     std::atomic<bool> enabled { true };
 };
@@ -59,6 +60,9 @@ public:
     std::atomic<bool>  uiPlaying  { false };
     std::atomic<float> uiGrain    { 0.f };
 
+    // Editor zoom (1.0 = 100%), saved with the plugin state
+    std::atomic<float> editorScale { 1.f };
+
 private:
     struct Grain
     {
@@ -70,6 +74,8 @@ private:
     };
 
     int pickSample();
+    int bag[256] {};          // shuffled play order: every sample once per round
+    int bagCount = 0;
 
     juce::AudioFormatManager formats;
     juce::CriticalSection lock;

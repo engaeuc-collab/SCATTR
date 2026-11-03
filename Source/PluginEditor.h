@@ -67,6 +67,7 @@ public:
 private:
     void timerCallback() override;
     void drawVine (juce::Graphics&);
+    void applyScale (float newScale);
     juce::Rectangle<float> waveRect() const { return { 18.f, 72.f, (float) getWidth() - 36.f, 170.f }; }
 
     static constexpr int listY = 268, rowH = 18, maxRows = 6;
@@ -83,8 +84,11 @@ private:
     std::array<Knob, 17> knobs;
     juce::TextButton loadBtn { "PLANT" }, clearBtn { "CLEAR" };
     juce::TextButton typeBtn { "LP" };
+    juce::TextButton scaleBtn { "100%" };
     juce::ToggleButton droneBtn { "DRIFT" };
     std::unique_ptr<juce::AudioProcessorValueTreeState::ButtonAttachment> droneAttach;
+    juce::ToggleButton tuneBtn { "TUNE" };
+    std::unique_ptr<juce::AudioProcessorValueTreeState::ButtonAttachment> tuneAttach;
     std::unique_ptr<juce::FileChooser> chooser;
 
     struct Tick { float pos, y, alpha; };

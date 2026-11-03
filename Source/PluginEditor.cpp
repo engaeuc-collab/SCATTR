@@ -150,10 +150,32 @@ ScattrEditor::ScattrEditor (ScattrProcessor& p) : juce::AudioProcessorEditor (&p
         par->endChangeGesture();
     };
 
+    addAndMakeVisible (scaleBtn);
+    scaleBtn.onClick = [this]
+    {
+        static const float options[] = { 0.5f, 0.75f, 1.0f, 1.5f, 2.0f };
+        const float cur = proc.editorScale.load();
+
+        juce::PopupMenu menu;
+        for (int i = 0; i < 5; ++i)
+            menu.addItem (i + 1, juce::String (juce::roundToInt (options[i] * 100.f)) + "%",
+                          true, std::abs (options[i] - cur) < 0.01f);
+
+        juce::Component::SafePointer<ScattrEditor> safe (this);
+        menu.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (&scaleBtn),
+                            [safe] (int result)
+                            {
+                                if (safe != nullptr && result > 0)
+                                    safe->applyScale (options[result - 1]);
+                            });
+    };
+
     addAndMakeVisible (loadBtn);
     addAndMakeVisible (clearBtn);
     addAndMakeVisible (droneBtn);
     droneAttach = std::make_unique<juce::AudioProcessorValueTreeState::ButtonAttachment> (proc.apvts, "drone", droneBtn);
+    addAndMakeVisible (tuneBtn);
+    tuneAttach = std::make_unique<juce::AudioProcessorValueTreeState::ButtonAttachment> (proc.apvts, "tune", tuneBtn);
 
     loadBtn.onClick = [this]
     {
@@ -168,6 +190,7 @@ ScattrEditor::ScattrEditor (ScattrProcessor& p) : juce::AudioProcessorEditor (&p
     };
     clearBtn.onClick = [this] { proc.clearSamples(); shown = -1; listOff = 0; repaint(); };
 
+    applyScale (proc.editorScale.load());
     startTimerHz (30);
 }
 
@@ -177,12 +200,21 @@ ScattrEditor::~ScattrEditor()
     setLookAndFeel (nullptr);
 }
 
+void ScattrEditor::applyScale (float s)
+{
+    proc.editorScale = s;
+    scaleBtn.setButtonText (juce::String (juce::roundToInt (s * 100.f)) + "%");
+    setScaleFactor (s);
+}
+
 void ScattrEditor::resized()
 {
     const int w = getWidth();
     droneBtn.setBounds (w - 18 - 80, 26, 80, 26);
     clearBtn.setBounds (w - 18 - 80 - 8 - 80, 26, 80, 26);
     loadBtn.setBounds  (w - 18 - 80 - 8 - 80 - 8 - 80, 26, 80, 26);
+    tuneBtn.setBounds (w - 18 - 80, 244, 80, 22);
+    scaleBtn.setBounds (w - 18 - 80 - 8 - 80 - 8 - 80 - 8 - 80, 26, 80, 26);
 
     const int cw1 = (w - 36) / 8, cw2 = (w - 36) / 10;
     for (size_t i = 0; i < knobs.size(); ++i)
@@ -371,7 +403,7 @@ void ScattrEditor::paint (juce::Graphics& g)
     juce::String st = proc.samples.empty() ? "the grove is empty"
                     : playing && shown >= 0 ? "blooming: " + proc.samples[(size_t) shown]->name
                                             : "resting...";
-    g.drawText (st, 18, 246, getWidth() - 36, 18, juce::Justification::centredLeft);
+    g.drawText (st, 18, 246, getWidth() - 36 - 90, 18, juce::Justification::centredLeft);
 
     // sample list
     g.setFont (serif (14.f));
@@ -393,9 +425,11 @@ void ScattrEditor::paint (juce::Graphics& g)
                   on ? (isCur ? grass : grassDark.brighter (0.2f)) : bark.withAlpha (0.6f));
 
         g.setColour (isCur ? ink : on ? dim.brighter (0.3f) : dim.withAlpha (0.5f));
-        g.drawText (s.name + (on ? "" : "  (dormant)"), row.withTrimmedLeft (28).withTrimmedRight (60),
+        g.drawText (s.name + (on ? "" : "  (dormant)"), row.withTrimmedLeft (28).withTrimmedRight (110),
                     juce::Justification::centredLeft, true);
-        g.drawText (juce::String (s.length / s.sampleRate, 1) + " s", row.reduced (8, 0),
+        const juce::String key = s.rootNote >= 0.f
+            ? juce::MidiMessage::getMidiNoteName (juce::roundToInt (s.rootNote), true, true, 5) : juce::String ("--");
+        g.drawText (key + "   " + juce::String (s.length / s.sampleRate, 1) + " s", row.reduced (8, 0),
                     juce::Justification::centredRight);
     }
 

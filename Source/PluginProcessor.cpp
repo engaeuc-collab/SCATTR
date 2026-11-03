@@ -40,7 +40,92 @@ juce::AudioProcessorValueTreeState::ParameterLayout makeLayout()
     p.push_back (std::make_unique<juce::AudioParameterBool> (
         juce::ParameterID { "drone", 1 }, "Drone (free-run)", true));
 
+    p.push_back (std::make_unique<juce::AudioParameterBool> (
+        juce::ParameterID { "tune", 1 }, "Tune Samples", true));
+
     return { p.begin(), p.end() };
+}
+
+// Estimates a sample's pitch (YIN) from its loudest sections.
+// Returns a fractional MIDI note, or -1 if there is no clear pitch (drums, noise...).
+float detectRootNote (const Sample& s)
+{
+    const int n = s.length;
+    const double sr = s.sampleRate;
+    const int tauMax = juce::jlimit (64, 4096, (int) (sr / 40.0));
+    const int tauMin = juce::jmax (2, (int) (sr / 2000.0));
+    const int W = tauMax;
+    const int frameLen = W + tauMax;
+    if (n < frameLen + 8) return -1.f;
+
+    const float* c0 = s.data.getReadPointer (0);
+    const float* c1 = s.data.getNumChannels() > 1 ? s.data.getReadPointer (1) : nullptr;
+
+    std::vector<float> x ((size_t) frameLen);
+    auto load = [&] (int start)
+    {
+        for (int j = 0; j < frameLen; ++j)
+            x[(size_t) j] = c1 != nullptr ? 0.5f * (c0[start + j] + c1[start + j]) : c0[start + j];
+    };
+
+    // find the loudest frames
+    const int numCand = 64, span = n - frameLen;
+    std::vector<std::pair<float, int>> cands;
+    for (int c = 0; c < numCand; ++c)
+    {
+        const int start = (int) ((double) span * (double) c / (double) (numCand - 1));
+        load (start);
+        double e = 0.0;
+        for (float v : x) e += (double) v * v;
+        cands.emplace_back ((float) std::sqrt (e / frameLen), start);
+    }
+    std::sort (cands.begin(), cands.end(), [] (const auto& a, const auto& b) { return a.first > b.first; });
+
+    std::vector<float> found, d ((size_t) tauMax), cm ((size_t) tauMax);
+    for (int k = 0; k < 6; ++k)
+    {
+        if (cands[(size_t) k].first < 0.005f) break;
+        load (cands[(size_t) k].second);
+
+        for (int tau = 1; tau < tauMax; ++tau)
+        {
+            float sum = 0.f;
+            for (int j = 0; j < W; ++j)
+            {
+                const float df = x[(size_t) j] - x[(size_t) (j + tau)];
+                sum += df * df;
+            }
+            d[(size_t) tau] = sum;
+        }
+
+        cm[0] = 1.f;
+        float run = 0.f;
+        for (int tau = 1; tau < tauMax; ++tau)
+        {
+            run += d[(size_t) tau];
+            cm[(size_t) tau] = run > 0.f ? d[(size_t) tau] * (float) tau / run : 1.f;
+        }
+
+        int tau = -1;
+        for (int t = tauMin; t < tauMax - 1; ++t)
+            if (cm[(size_t) t] < 0.15f)
+            {
+                while (t + 1 < tauMax - 1 && cm[(size_t) t + 1] < cm[(size_t) t]) ++t;
+                tau = t;
+                break;
+            }
+        if (tau < 0) continue;
+
+        const float a = cm[(size_t) tau - 1], b = cm[(size_t) tau], c = cm[(size_t) tau + 1];
+        const float den = a - 2.f * b + c;
+        const float shift = std::abs (den) > 1e-9f ? 0.5f * (a - c) / den : 0.f;
+        const double freq = sr / ((double) tau + (double) shift);
+        found.push_back ((float) (69.0 + 12.0 * std::log2 (freq / 440.0)));
+    }
+
+    if (found.size() < 2) return -1.f;
+    std::sort (found.begin(), found.end());
+    return found[found.size() / 2];
 }
 } // namespace
 
@@ -118,6 +203,8 @@ bool ScattrProcessor::addSampleFile (const juce::File& f)
         s->peaks.emplace_back (mn, mx);
     }
 
+    s->rootNote = detectRootNote (*s);
+
     const juce::ScopedLock sl (lock);
     samples.push_back (s);
     ++generation;
@@ -133,19 +220,30 @@ void ScattrProcessor::clearSamples()
 
 int ScattrProcessor::pickSample()
 {
-    int cand[256];
-    int n = 0;
-    for (int i = 0; i < (int) samples.size(); ++i)
-        if (samples[(size_t) i]->enabled.load()) cand[n++] = i;
-
-    if (n > 1)
+    // Shuffled rounds: every enabled sample plays once, in random order, before any repeats.
+    for (int pass = 0; pass < 2; ++pass)
     {
-        int m = 0;
-        for (int i = 0; i < n; ++i)
-            if (cand[i] != last) cand[m++] = cand[i];
-        n = m;
+        if (bagCount == 0)
+        {
+            for (int i = 0; i < (int) samples.size() && bagCount < 256; ++i)
+                if (samples[(size_t) i]->enabled.load()) bag[bagCount++] = i;
+
+            for (int i = bagCount - 1; i > 0; --i)
+                std::swap (bag[i], bag[rng.nextInt (i + 1)]);
+
+            // don't start a new round with the sample that just played
+            if (bagCount > 1 && bag[bagCount - 1] == last)
+                std::swap (bag[bagCount - 1], bag[rng.nextInt (bagCount - 1)]);
+        }
+
+        while (bagCount > 0)
+        {
+            const int i = bag[--bagCount];
+            if (i < (int) samples.size() && samples[(size_t) i]->enabled.load())
+                return i;
+        }
     }
-    return n > 0 ? cand[rng.nextInt (n)] : -1;
+    return -1;
 }
 
 // ---------------------------------------------------------------- audio
@@ -173,6 +271,7 @@ void ScattrProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::Midi
         phase = Phase::Gap;
         remaining = 0;
         cur = last = -1;
+        bagCount = 0;
     }
 
     auto prm = [this] (const char* id) { return apvts.getRawParameterValue (id)->load(); };
@@ -186,6 +285,8 @@ void ScattrProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::Midi
     const int sizeSamples = juce::jmax (32, (int) (sizeMs * 0.001 * sr));
     const float norm = amp / std::sqrt (juce::jmax (1.0f, dens * sizeMs * 0.001f));
     const float pitchOff = notesHeld > 0 ? (float) (heldNote - 60) : 0.f;
+    const bool tuneOn = prm ("tune") > 0.5f;
+    const float targetNote = notesHeld > 0 ? (float) heldNote : 60.f;   // C4 when drifting with no key held
 
     // effect settings
     const float cutoff = prm ("cutoff"), reso = prm ("reso"), drive = prm ("drive"),
@@ -217,7 +318,9 @@ void ScattrProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::Midi
 
         const Sample& s = *samples[(size_t) cur];
         const double srcLen = (double) s.length;
-        const float semis = pitch + pitchOff + (rng.nextFloat() * 2.f - 1.f) * pjit;
+        // tuned: shift this sample from its own detected pitch to the target note
+        const float keyOff = (tuneOn && s.rootNote >= 0.f) ? targetNote - s.rootNote : pitchOff;
+        const float semis = pitch + keyOff + (rng.nextFloat() * 2.f - 1.f) * pjit;
         const double inc = std::pow (2.0, semis / 12.0) * s.sampleRate / sr;
         const int len = juce::jmin (len0, (int) ((srcLen - 4.0) / inc));
         if (len <= 32) return;
@@ -366,6 +469,7 @@ void ScattrProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::Midi
 void ScattrProcessor::getStateInformation (juce::MemoryBlock& dest)
 {
     auto st = apvts.copyState();
+    st.setProperty ("uiScale", editorScale.load(), nullptr);
     juce::ValueTree sl ("SAMPLES");
     for (auto& s : samples)
     {
@@ -385,6 +489,8 @@ void ScattrProcessor::setStateInformation (const void* data, int size)
     {
         auto st = juce::ValueTree::fromXml (*xml);
         if (! st.hasType (apvts.state.getType())) return;
+
+        editorScale = juce::jlimit (0.5f, 2.0f, (float) st.getProperty ("uiScale", 1.0f));
 
         auto sl = st.getChildWithName ("SAMPLES");
         st.removeChild (sl, nullptr);
