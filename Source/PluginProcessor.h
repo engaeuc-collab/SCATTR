@@ -22,6 +22,14 @@ struct Sample
     float minGapN() const { return juce::jlimit (0.002f, 0.5f, 1024.f / (float) juce::jmax (1, length)); }
 };
 
+// A looping background texture used by the "wind" knob
+struct Texture
+{
+    juce::AudioBuffer<float> data;
+    double sampleRate = 44100.0;
+    int length = 0, xfade = 0;   // xfade = loop crossfade length in samples
+};
+
 class ScattrProcessor : public juce::AudioProcessor
 {
 public:
@@ -102,8 +110,19 @@ private:
     bool retrigger = false;   // set on every note-on: jump to a fresh random sample right away
     juce::Random rng;
 
+    // wind texture layer
+    void loadTextures();
+    std::vector<Texture> textures;
+    int texIdx = -1, texNext = -1;
+    double texPos = 0.0;
+    float texLevel = 0.f;
+
     // effects
     juce::dsp::StateVariableTPTFilter<float> filter;
+    juce::SmoothedValue<float, juce::ValueSmoothingTypes::Linear> fOnSm, dOnSm, rOnSm;   // bypass fades
+    std::vector<float> revL, revR, preBuf[2];                                           // reverb scratch + pre-delay
+    int preW = 0, preSize = 1;
+    bool revActive = false;
     juce::Reverb reverb;
     std::vector<float> delayBuf[2];
     int delayW = 0, delaySize = 1;

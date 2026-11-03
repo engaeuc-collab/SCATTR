@@ -129,16 +129,19 @@ private:
         std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> attach;
     };
 
-    static bool onGrainsTab (size_t knobIndex) { return knobIndex <= 7 || knobIndex >= 17; }
+    static bool onGrainsTab (size_t knobIndex) { return knobIndex <= 7 || (knobIndex >= 17 && knobIndex <= 19); }
 
     ScattrProcessor& proc;
     ScattrLNF lnf;
     Scat::Palette pal;
     int curTheme = 0, tab = 0;
-    std::array<Knob, 20> knobs;
+    std::array<Knob, 21> knobs;
     std::array<juce::TextButton, 2> tabBtn;
     juce::TextButton loadBtn { "PLANT" }, clearBtn { "CLEAR" };
     juce::TextButton typeBtn { "LP" };
+    juce::TextButton spaceBtn { "HALL" };
+    juce::ToggleButton fonBtn { "ON" }, donBtn { "ON" }, ronBtn { "ON" };   // per-effect bypass
+    std::unique_ptr<juce::AudioProcessorValueTreeState::ButtonAttachment> fonAttach, donAttach, ronAttach;
     juce::TextButton scaleBtn { "100%" };
     juce::TextButton themeBtn { "twilight" };
     juce::ToggleButton droneBtn { "DRIFT" };

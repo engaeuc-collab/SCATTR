@@ -29,6 +29,8 @@ void drawFlower (juce::Graphics& g, float x, float y, float r, juce::Colour peta
     g.fillEllipse (x - r * 0.25f, y - r * 0.25f, r * 0.5f, r * 0.5f);
 }
 
+const char* const kNoteNames[11] = { "1/32", "1/16T", "1/16", "1/8T", "1/8", "1/8.", "1/4T", "1/4", "1/4.", "1/2", "1/1" };
+
 void drawMaple (juce::Graphics& g, float x, float y, float rot, float r, juce::Colour c)
 {
     juce::Path p;
@@ -192,14 +194,15 @@ ScattrPanel::ScattrPanel (ScattrProcessor& p) : proc (p)
 
     struct Def { const char* id; const char* text; int dp; };
     // dp = digits shown under the knob (whole numbers for big ranges, 0.00 style for the small ones)
-    static const Def defs[20] = {
+    static const Def defs[21] = {
         { "size", "seed size", 0 }, { "dens", "rain", 0 }, { "pitch", "pitch", 2 },
-        { "pjit", "wind", 2 }, { "spray", "scatter", 2 }, { "hold", "bloom", 2 },
+        { "wind", "wind", 2 }, { "spray", "scatter", 2 }, { "hold", "bloom", 2 },
         { "gap", "rest", 2 }, { "amp", "sun", 2 },
         { "cutoff", "cutoff", 0 }, { "reso", "reso", 2 }, { "drive", "drive", 2 },
-        { "dtime", "time", 0 }, { "dfb", "feedback", 2 }, { "dmix", "echo mix", 2 },
+        { "dnote", "time", -1 }, { "dfb", "feedback", 2 }, { "dmix", "echo mix", 2 },
         { "rsize", "size", 2 }, { "rdamp", "damp", 2 }, { "rmix", "reverb mix", 2 },
-        { "mtune", "master tune", 0 }, { "cycle", "cycle", 2 }, { "rand", "random", 2 }
+        { "mtune", "master tune", 0 }, { "cycle", "cycle", 2 }, { "rand", "random", 2 },
+        { "fmix", "filter mix", 2 }
     };
 
     for (size_t i = 0; i < knobs.size(); ++i)
@@ -214,8 +217,21 @@ ScattrPanel::ScattrPanel (ScattrProcessor& p) : proc (p)
 
         // the attachment installs the host's long-winded text; replace it with a short fixed-decimals readout
         const int dp = defs[i].dp;
-        k.slider.textFromValueFunction = [dp] (double v) { return juce::String (v, dp); };
-        k.slider.valueFromTextFunction = [] (const juce::String& t) { return t.retainCharacters ("-0123456789.").getDoubleValue(); };
+        if (dp < 0)   // delay time: shows note values (1/4, 1/8, ...)
+        {
+            k.slider.textFromValueFunction = [] (double v) { return juce::String (kNoteNames[juce::jlimit (0, 10, juce::roundToInt (v))]); };
+            k.slider.valueFromTextFunction = [] (const juce::String& t)
+            {
+                for (int j = 0; j < 11; ++j)
+                    if (t.trim().equalsIgnoreCase (kNoteNames[j])) return (double) j;
+                return 4.0;
+            };
+        }
+        else
+        {
+            k.slider.textFromValueFunction = [dp] (double v) { return juce::String (v, dp); };
+            k.slider.valueFromTextFunction = [] (const juce::String& t) { return t.retainCharacters ("-0123456789.").getDoubleValue(); };
+        }
         k.slider.updateText();
 
         k.label.setText (defs[i].text, juce::dontSendNotification);
@@ -246,6 +262,21 @@ ScattrPanel::ScattrPanel (ScattrProcessor& p) : proc (p)
         par->setValueNotifyingHost (par->convertTo0to1 ((float) ((cur + 1) % 3)));
         par->endChangeGesture();
     };
+
+    addAndMakeVisible (spaceBtn);
+    spaceBtn.onClick = [this]
+    {
+        auto* par = proc.apvts.getParameter ("rtype");
+        const int cur = (int) proc.apvts.getRawParameterValue ("rtype")->load();
+        par->beginChangeGesture();
+        par->setValueNotifyingHost (par->convertTo0to1 ((float) ((cur + 1) % 4)));
+        par->endChangeGesture();
+    };
+
+    for (auto* b : { &fonBtn, &donBtn, &ronBtn }) addAndMakeVisible (*b);
+    fonAttach = std::make_unique<juce::AudioProcessorValueTreeState::ButtonAttachment> (proc.apvts, "fon", fonBtn);
+    donAttach = std::make_unique<juce::AudioProcessorValueTreeState::ButtonAttachment> (proc.apvts, "don", donBtn);
+    ronAttach = std::make_unique<juce::AudioProcessorValueTreeState::ButtonAttachment> (proc.apvts, "ron", ronBtn);
 
     addAndMakeVisible (scaleBtn);
     scaleBtn.setButtonText (juce::String (juce::roundToInt (proc.editorScale.load() * 100.f)) + "%");
@@ -341,6 +372,8 @@ void ScattrPanel::setTab (int t)
         knobs[i].label.setVisible (vis);
     }
     typeBtn.setVisible (! g);
+    spaceBtn.setVisible (! g);
+    for (auto* b : { &fonBtn, &donBtn, &ronBtn }) b->setVisible (! g);
     loadBtn.setVisible (g);
     clearBtn.setVisible (g);
     droneBtn.setVisible (g);
@@ -384,15 +417,22 @@ void ScattrPanel::resized()
         tuneBtn.setBounds  (bx, (int) mp.getY() + 78, 80, 28);
     }
 
-    // fx tab: one row per effect, shared column grid
+    // fx tab: one row per effect, shared 5-column grid
     {
-        for (int k = 0; k < 3; ++k) place ((size_t) (8 + k),  fxPanel (0), 4, k, 94);   // cutoff, reso, drive
-        for (int k = 0; k < 3; ++k) place ((size_t) (11 + k), fxPanel (1), 4, k, 94);   // time, feedback, echo mix
-        for (int k = 0; k < 3; ++k) place ((size_t) (14 + k), fxPanel (2), 4, k, 94);   // size, damp, reverb mix
+        static const size_t filterKnobs[4] = { 8, 9, 10, 20 };   // cutoff, reso, drive, filter mix
+        for (int k = 0; k < 4; ++k) place (filterKnobs[k], fxPanel (0), 5, k, 94);
+        for (int k = 0; k < 3; ++k) place ((size_t) (11 + k), fxPanel (1), 5, k, 94);   // time, feedback, echo mix
+        for (int k = 0; k < 3; ++k) place ((size_t) (14 + k), fxPanel (2), 5, k, 94);   // size, damp, reverb mix
 
-        const auto fp = fxPanel (0);
-        const int sw = (int) ((fp.getWidth() - 24.f) / 4.f);
-        typeBtn.setBounds ((int) fp.getX() + 12 + 3 * sw + (sw - 80) / 2, (int) fp.getY() + 64, 80, 28);
+        const int sw = (int) ((fxPanel (0).getWidth() - 24.f) / 5.f);
+        auto colX = [&] (int col, int w) { return (int) fxPanel (0).getX() + 12 + col * sw + (sw - w) / 2; };
+        typeBtn.setBounds  (colX (4, 100), (int) fxPanel (0).getY() + 64, 100, 28);
+        spaceBtn.setBounds (colX (4, 100), (int) fxPanel (2).getY() + 64, 100, 28);
+
+        // bypass buttons in each panel's top-right corner
+        fonBtn.setBounds ((int) fxPanel (0).getRight() - 12 - 56, (int) fxPanel (0).getY() + 7, 56, 24);
+        donBtn.setBounds ((int) fxPanel (1).getRight() - 12 - 56, (int) fxPanel (1).getY() + 7, 56, 24);
+        ronBtn.setBounds ((int) fxPanel (2).getRight() - 12 - 56, (int) fxPanel (2).getY() + 7, 56, 24);
     }
 }
 
@@ -495,6 +535,20 @@ void ScattrPanel::timerCallback()
     static const char* ft[3] = { "LP", "HP", "BP" };
     const int fi = juce::jlimit (0, 2, (int) proc.apvts.getRawParameterValue ("ftype")->load());
     if (typeBtn.getButtonText() != ft[fi]) typeBtn.setButtonText (ft[fi]);
+
+    static const char* rt[4] = { "ROOM", "PLATE", "HALL", "CATHEDRAL" };
+    const int ri = juce::jlimit (0, 3, (int) proc.apvts.getRawParameterValue ("rtype")->load());
+    if (spaceBtn.getButtonText() != rt[ri]) spaceBtn.setButtonText (rt[ri]);
+
+    // bypassed effects look dimmed
+    const float aF = fonBtn.getToggleState() ? 1.f : 0.4f;
+    const float aD = donBtn.getToggleState() ? 1.f : 0.4f;
+    const float aR = ronBtn.getToggleState() ? 1.f : 0.4f;
+    for (size_t idx : { (size_t) 8, (size_t) 9, (size_t) 10, (size_t) 20 }) { knobs[idx].slider.setAlpha (aF); knobs[idx].label.setAlpha (aF); }
+    for (size_t idx : { (size_t) 11, (size_t) 12, (size_t) 13 })            { knobs[idx].slider.setAlpha (aD); knobs[idx].label.setAlpha (aD); }
+    for (size_t idx : { (size_t) 14, (size_t) 15, (size_t) 16 })            { knobs[idx].slider.setAlpha (aR); knobs[idx].label.setAlpha (aR); }
+    typeBtn.setAlpha (aF);
+    spaceBtn.setAlpha (aR);
 
     const int c = proc.uiSample.load();
     playIdx = c;
@@ -837,11 +891,11 @@ void ScattrPanel::paintFxTab (juce::Graphics& g)
     drawGroup (g, fxPanel (1), "canyon: delay");
     drawGroup (g, fxPanel (2), "cavern: reverb");
 
-    const auto fp = fxPanel (0);
-    const int sw = (int) ((fp.getWidth() - 24.f) / 4.f);
+    const int sw = (int) ((fxPanel (0).getWidth() - 24.f) / 5.f);
     g.setColour (pal.dim);
     g.setFont (serif (14.f, true));
-    g.drawText ("mode", (int) fp.getX() + 12 + 3 * sw, (int) fp.getY() + 40, sw, 16, juce::Justification::centred);
+    g.drawText ("mode",  (int) fxPanel (0).getX() + 12 + 4 * sw, (int) fxPanel (0).getY() + 40, sw, 16, juce::Justification::centred);
+    g.drawText ("space", (int) fxPanel (2).getX() + 12 + 4 * sw, (int) fxPanel (2).getY() + 40, sw, 16, juce::Justification::centred);
 }
 
 void ScattrPanel::paint (juce::Graphics& g)

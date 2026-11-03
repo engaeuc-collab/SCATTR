@@ -1,6 +1,10 @@
 #include "PluginProcessor.h"
 #include "PluginEditor.h"
 
+#if SCATTR_HAS_TEXTURES
+ #include "BinaryData.h"
+#endif
+
 namespace
 {
 juce::AudioProcessorValueTreeState::ParameterLayout makeLayout()
@@ -14,10 +18,10 @@ juce::AudioProcessorValueTreeState::ParameterLayout makeLayout()
             juce::ParameterID { id, 1 }, name, NR (lo, hi, 0.0f, skew), def));
     };
 
-    add ("size",  "Grain Size",  10.f, 500.f, 120.f, 0.5f);
+    add ("size",  "Grain Size",  40.f, 500.f, 120.f, 0.5f);
     add ("dens",  "Density",     1.f,  80.f,  25.f,  0.5f);
     add ("pitch", "Pitch",      -24.f, 24.f,  0.f,   1.f);
-    add ("pjit",  "Pitch Jitter", 0.f, 12.f,  0.f,   1.f);
+    add ("wind",  "Wind Texture", 0.f, 1.f,   0.f,   1.f);   // level of the looping texture layer
     add ("spray", "Spray",        0.f, 1.f,   0.1f,  1.f);
     add ("hold",  "Hold",         0.5f, 20.f, 4.f,   0.5f);
     add ("gap",   "Gap",          0.f, 5.f,   0.3f,  1.f);
@@ -31,7 +35,7 @@ juce::AudioProcessorValueTreeState::ParameterLayout makeLayout()
     add ("cutoff", "Filter Cutoff", 20.f, 20000.f, 20000.f, 0.3f);
     add ("reso",   "Filter Reso",   0.5f, 12.f,    0.7f,    0.5f);
     add ("drive",  "Drive",         0.f,  1.f,     0.f,     1.f);
-    add ("dtime",  "Delay Time",    10.f, 1000.f,  350.f,   0.5f);
+    add ("fmix",   "Filter Mix",    0.f,  1.f,     1.f,     1.f);
     add ("dfb",    "Delay Feedback",0.f,  0.95f,   0.35f,   1.f);
     add ("dmix",   "Delay Mix",     0.f,  1.f,     0.15f,   1.f);
     add ("rsize",  "Reverb Size",   0.f,  1.f,     0.6f,    1.f);
@@ -40,6 +44,19 @@ juce::AudioProcessorValueTreeState::ParameterLayout makeLayout()
     p.push_back (std::make_unique<juce::AudioParameterChoice> (
         juce::ParameterID { "ftype", 1 }, "Filter Type", juce::StringArray { "LP", "HP", "BP" }, 0));
 
+    p.push_back (std::make_unique<juce::AudioParameterChoice> (
+        juce::ParameterID { "dnote", 1 }, "Delay Time",
+        juce::StringArray { "1/32", "1/16T", "1/16", "1/8T", "1/8", "1/8.", "1/4T", "1/4", "1/4.", "1/2", "1/1" }, 4));
+
+    p.push_back (std::make_unique<juce::AudioParameterChoice> (
+        juce::ParameterID { "rtype", 1 }, "Reverb Space",
+        juce::StringArray { "Room", "Plate", "Hall", "Cathedral" }, 2));
+
+    // every effect starts bypassed
+    p.push_back (std::make_unique<juce::AudioParameterBool> (juce::ParameterID { "fon", 1 }, "Filter On", false));
+    p.push_back (std::make_unique<juce::AudioParameterBool> (juce::ParameterID { "don", 1 }, "Delay On",  false));
+    p.push_back (std::make_unique<juce::AudioParameterBool> (juce::ParameterID { "ron", 1 }, "Reverb On", false));
+
     p.push_back (std::make_unique<juce::AudioParameterBool> (
         juce::ParameterID { "drone", 1 }, "Drone (free-run)", true));
 
@@ -47,6 +64,18 @@ juce::AudioProcessorValueTreeState::ParameterLayout makeLayout()
         juce::ParameterID { "tune", 1 }, "Tune Samples", true));
 
     return { p.begin(), p.end() };
+}
+
+// linear-interpolated stereo read from a texture
+inline void readTexAt (const Texture& t, double pos, float& l, float& r)
+{
+    const int i = juce::jlimit (0, t.length - 1, (int) pos);
+    const int j = juce::jmin (i + 1, t.length - 1);
+    const float fr = (float) (pos - (double) i);
+    const float* d0 = t.data.getReadPointer (0);
+    const float* d1 = t.data.getNumChannels() > 1 ? t.data.getReadPointer (1) : d0;
+    l = d0[i] + (d0[j] - d0[i]) * fr;
+    r = d1[i] + (d1[j] - d1[i]) * fr;
 }
 
 // Estimates a sample's pitch (YIN) from its loudest sections.
@@ -139,6 +168,77 @@ ScattrProcessor::ScattrProcessor()
     formats.registerBasicFormats();
     for (int i = 0; i <= 1024; ++i)
         env[i] = 0.5f - 0.5f * std::cos (juce::MathConstants<float>::twoPi * (float) i / 1024.f);
+    loadTextures();
+}
+
+// Textures are audio files placed in the project's Textures/ folder; CMake embeds them in the plugin.
+// With no files there, a soft built-in noise bed is used so the wind knob still does something.
+void ScattrProcessor::loadTextures()
+{
+    auto finish = [this] (Texture&& t)
+    {
+        if (t.length < 256) return;
+
+        double sum = 0.0;
+        float peak = 0.f;
+        for (int ch = 0; ch < t.data.getNumChannels(); ++ch)
+        {
+            const float* d = t.data.getReadPointer (ch);
+            for (int i = 0; i < t.length; ++i) { sum += (double) d[i] * d[i]; peak = juce::jmax (peak, std::abs (d[i])); }
+        }
+        const float rms = (float) std::sqrt (sum / (double) (t.length * t.data.getNumChannels()));
+        if (rms < 1.0e-6f || peak < 1.0e-6f) return;
+
+        // even out levels between textures (about -14 dBFS RMS, never clipping)
+        t.data.applyGain (juce::jmin (0.2f / rms, 0.95f / peak));
+        t.xfade = juce::jmin (2048, t.length / 4);
+        textures.push_back (std::move (t));
+    };
+
+   #if SCATTR_HAS_TEXTURES
+    for (int i = 0; i < BinaryData::namedResourceListSize; ++i)
+    {
+        int size = 0;
+        const char* data = BinaryData::getNamedResource (BinaryData::namedResourceList[i], size);
+        if (data == nullptr || size <= 0) continue;
+
+        std::unique_ptr<juce::AudioFormatReader> r (formats.createReaderFor (
+            std::make_unique<juce::MemoryInputStream> (data, (size_t) size, false)));
+        if (r == nullptr || r->lengthInSamples < 256) continue;
+
+        const int n = (int) juce::jmin<juce::int64> (r->lengthInSamples, (juce::int64) (r->sampleRate * 90.0));
+        Texture t;
+        t.sampleRate = r->sampleRate;
+        t.length = n;
+        t.data.setSize (juce::jmin (2, (int) r->numChannels), n);
+        t.data.clear();
+        r->read (&t.data, 0, n, 0, true, true);
+        finish (std::move (t));
+    }
+   #else
+    {
+        Texture t;
+        t.sampleRate = 44100.0;
+        t.length = 44100 * 6;
+        t.data.setSize (2, t.length);
+        for (int ch = 0; ch < 2; ++ch)
+        {
+            juce::Random rnd (4321 + ch * 77);
+            float* d = t.data.getWritePointer (ch);
+            float b0 = 0.f, b1 = 0.f, b2 = 0.f;
+            for (int i = 0; i < t.length; ++i)
+            {
+                const float w = rnd.nextFloat() * 2.f - 1.f;
+                b0 = 0.99765f * b0 + w * 0.0990460f;
+                b1 = 0.96300f * b1 + w * 0.2965164f;
+                b2 = 0.57000f * b2 + w * 1.0526913f;
+                const float gust = 0.65f + 0.35f * std::sin (juce::MathConstants<float>::twoPi * 2.f * (float) i / (float) t.length);
+                d[i] = (b0 + b1 + b2 + w * 0.1848f) * gust;
+            }
+        }
+        finish (std::move (t));
+    }
+   #endif
 }
 
 void ScattrProcessor::prepareToPlay (double sampleRate, int samplesPerBlock)
@@ -150,12 +250,28 @@ void ScattrProcessor::prepareToPlay (double sampleRate, int samplesPerBlock)
     reverb.setSampleRate (sampleRate);
     reverb.reset();
 
-    delaySize = (int) (sampleRate * 1.1) + 8;
+    delaySize = (int) (sampleRate * 4.1) + 8;   // room for a whole note at 60 bpm
     for (auto& b : delayBuf) b.assign ((size_t) delaySize, 0.f);
     delayW = 0;
     fbLp[0] = fbLp[1] = 0.f;
     delayTimeSm.reset (sampleRate, 0.08);
     delayTimeSm.setCurrentAndTargetValue ((float) (0.35 * sampleRate));
+
+    for (auto* sm : { &fOnSm, &dOnSm, &rOnSm })
+    {
+        sm->reset (sampleRate, 0.02);
+        sm->setCurrentAndTargetValue (0.f);
+    }
+    preSize = (int) (sampleRate * 0.1) + 8;
+    for (auto& b : preBuf) b.assign ((size_t) preSize, 0.f);
+    preW = 0;
+    revL.assign ((size_t) juce::jmax (1, samplesPerBlock), 0.f);
+    revR.assign ((size_t) juce::jmax (1, samplesPerBlock), 0.f);
+    revActive = false;
+
+    texIdx = texNext = -1;
+    texPos = 0.0;
+    texLevel = 0.f;
     cutoffSm.reset (sampleRate, 0.03);
     cutoffSm.setCurrentAndTargetValue (20000.f);
 
@@ -278,7 +394,7 @@ void ScattrProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::Midi
     }
 
     auto prm = [this] (const char* id) { return apvts.getRawParameterValue (id)->load(); };
-    const float sizeMs = prm ("size"), dens = prm ("dens"), pitch = prm ("pitch"), pjit = prm ("pjit"),
+    const float sizeMs = prm ("size"), dens = prm ("dens"), pitch = prm ("pitch"), wind = prm ("wind"),
                 spray = prm ("spray"), holdS = prm ("hold"), gapS = prm ("gap"), cycleS = prm ("cycle"), randAmt = prm ("rand"), width = prm ("width"),
                 amp = prm ("amp");
     const bool active = prm ("drone") > 0.5f || notesHeld > 0;
@@ -286,24 +402,46 @@ void ScattrProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::Midi
     const double sr = currentSr;
     const int numSamples = buffer.getNumSamples();
     const int sizeSamples = juce::jmax (32, (int) (sizeMs * 0.001 * sr));
-    const float norm = amp / std::sqrt (juce::jmax (1.0f, dens * sizeMs * 0.001f));
+    // Keep grains overlapping by at least 2x: short seeds at a low rain rate used to leave gaps and
+    // sound choppy, so the rate is raised automatically as the seed shrinks.
+    const float densEff = juce::jmax (dens, 2.0f / (sizeMs * 0.001f));
+    const float norm = amp / std::sqrt (juce::jmax (1.0f, densEff * sizeMs * 0.001f));
     const float pitchOff = notesHeld > 0 ? (float) (heldNote - 60) : 0.f;
     const bool tuneOn = prm ("tune") > 0.5f;
     const float masterTune = prm ("mtune") * 0.01f;   // cents -> semitones
     const float targetNote = notesHeld > 0 ? (float) heldNote : 60.f;   // C4 when drifting with no key held
 
     // effect settings
-    const float cutoff = prm ("cutoff"), reso = prm ("reso"), drive = prm ("drive"),
-                dTime = prm ("dtime"), dFb = prm ("dfb"), dMix = prm ("dmix"),
+    const float cutoff = prm ("cutoff"), reso = prm ("reso"), drive = prm ("drive"), fMix = prm ("fmix"),
+                dFb = prm ("dfb"), dMix = prm ("dmix"),
                 rSize = prm ("rsize"), rDamp = prm ("rdamp"), rMix = prm ("rmix");
     const int fType = juce::jlimit (0, 2, (int) prm ("ftype"));
-    const bool filterOn = ! ((fType == 0 && cutoff > 18000.f) || (fType == 1 && cutoff < 25.f));
+    const bool fOn = prm ("fon") > 0.5f, dOn = prm ("don") > 0.5f, rOn = prm ("ron") > 0.5f;
+    fOnSm.setTargetValue (fOn ? 1.f : 0.f);
+    dOnSm.setTargetValue (dOn ? 1.f : 0.f);
+    rOnSm.setTargetValue (rOn ? 1.f : 0.f);
+
+    // tempo-synced delay time (falls back to 120 bpm when the host gives no tempo)
+    double bpm = 120.0;
+    if (auto* ph = getPlayHead())
+    {
+        const auto pos = ph->getPosition();
+        if (pos.hasValue())
+        {
+            const auto b = pos->getBpm();
+            if (b.hasValue() && *b > 20.0) bpm = *b;
+        }
+    }
+    static const double noteBeats[11] = { 0.125, 1.0 / 6.0, 0.25, 1.0 / 3.0, 0.5, 0.75, 2.0 / 3.0, 1.0, 1.5, 2.0, 4.0 };
+    const int dIdx = juce::jlimit (0, 10, (int) prm ("dnote"));
+    const float delaySamples = juce::jlimit (16.f, (float) (delaySize - 8), (float) (noteBeats[dIdx] * 60.0 / bpm * sr));
+    const float texCoef = 1.f - std::exp (-1.f / (0.25f * (float) sr));   // ~250 ms texture fades
     filter.setType (fType == 0 ? juce::dsp::StateVariableTPTFilterType::lowpass
                   : fType == 1 ? juce::dsp::StateVariableTPTFilterType::highpass
                                : juce::dsp::StateVariableTPTFilterType::bandpass);
     filter.setResonance (reso);
     cutoffSm.setTargetValue (juce::jlimit (20.f, (float) (0.45 * sr), cutoff));
-    delayTimeSm.setTargetValue (dTime * 0.001f * (float) sr);
+    delayTimeSm.setTargetValue (delaySamples);
     const float drv = 1.f + drive * 12.f;
     const float driveMakeup = 0.5f / std::tanh (drv * 0.5f);
 
@@ -339,7 +477,7 @@ void ScattrProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::Midi
         const double regLen = juce::jmax (1.0, regE - regS);
         // tuned: shift this sample from its own detected pitch to the target note
         const float keyOff = (tuneOn && s.rootNote >= 0.f) ? targetNote - s.rootNote : pitchOff;
-        const float semis = pitch + keyOff + masterTune + (rng.nextFloat() * 2.f - 1.f) * pjit;
+        const float semis = pitch + keyOff + masterTune;
         const double inc = std::pow (2.0, semis / 12.0) * s.sampleRate / sr;
         const int len = juce::jmin (len0, (int) ((regLen - 4.0) / inc));
         if (len <= 32) return;
@@ -371,6 +509,14 @@ void ScattrProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::Midi
             phase = Phase::Play;
             holdTotal = remaining = juce::jmax (1, (int) (cycleS * sr));
             grainCountdown = 0.0;
+        }
+
+        // a new key also brings in a different wind texture (it fades across, no click)
+        if (textures.size() > 1 && texIdx >= 0)
+        {
+            int t = texIdx;
+            for (int k = 0; k < 6 && t == texIdx; ++k) t = rng.nextInt ((int) textures.size());
+            if (t != texIdx) texNext = t;
         }
     }
 
@@ -406,7 +552,7 @@ void ScattrProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::Midi
                     if (grainCountdown <= 0.0)
                     {
                         spawn();
-                        grainCountdown += sr / (double) dens * (0.7 + 0.6 * rng.nextFloat());
+                        grainCountdown += sr / (double) densEff * (0.7 + 0.6 * rng.nextFloat());
                     }
                     grainCountdown -= 1.0;
                     --remaining;
@@ -441,25 +587,73 @@ void ScattrProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::Midi
         }
 
         float yL = oL * norm, yR = oR * norm;
+
+        // wind: a looping texture layer whose level is the wind knob
+        {
+            const bool wantTex = active && wind > 0.001f && ! textures.empty();
+            if (wantTex && texIdx < 0)
+            {
+                texIdx = rng.nextInt ((int) textures.size());
+                const auto& t0 = textures[(size_t) texIdx];
+                texPos = rng.nextDouble() * (double) (t0.length - t0.xfade);
+            }
+            if (texNext >= 0 && texLevel < 0.003f)
+            {
+                texIdx = texNext;
+                texNext = -1;
+                const auto& t0 = textures[(size_t) texIdx];
+                texPos = rng.nextDouble() * (double) (t0.length - t0.xfade);
+            }
+            texLevel += (((wantTex && texNext < 0) ? 1.f : 0.f) - texLevel) * texCoef;
+
+            if (texLevel > 0.0005f && texIdx >= 0)
+            {
+                const auto& tx = textures[(size_t) texIdx];
+                const double loopLen = (double) (tx.length - tx.xfade);
+                float tl, tr;
+                readTexAt (tx, texPos, tl, tr);
+                if (texPos < (double) tx.xfade)   // blend the loop seam
+                {
+                    float l2, r2;
+                    readTexAt (tx, texPos + loopLen, l2, r2);
+                    const float th = (float) (texPos / (double) tx.xfade) * juce::MathConstants<float>::halfPi;
+                    tl = tl * std::sin (th) + l2 * std::cos (th);
+                    tr = tr * std::sin (th) + r2 * std::cos (th);
+                }
+                texPos += tx.sampleRate / sr;
+                if (texPos >= loopLen) texPos -= loopLen;
+
+                const float tg = wind * texLevel;
+                yL += tl * tg;
+                yR += tr * tg;
+            }
+        }
+
         if (R == nullptr) yL = yR = 0.5f * (yL + yR);
 
-        // filter
+        // filter (+ drive), faded in/out by its on button and blended by the filter mix
         const float cf = cutoffSm.getNextValue();
-        if (filterOn)
+        const float fw = fOnSm.getNextValue();
+        if (fw > 0.0005f)
         {
+            const float dryL = yL, dryR = yR;
             if ((n & 7) == 0) filter.setCutoffFrequency (cf);
             yL = filter.processSample (0, yL);
             yR = filter.processSample (1, yR);
-        }
 
-        // drive
-        if (drive > 0.001f)
-        {
-            yL = std::tanh (yL * drv) * driveMakeup;
-            yR = std::tanh (yR * drv) * driveMakeup;
+            if (drive > 0.001f)
+            {
+                yL = std::tanh (yL * drv) * driveMakeup;
+                yR = std::tanh (yR * drv) * driveMakeup;
+            }
+
+            const float m = fMix * fw;
+            yL = dryL + (yL - dryL) * m;
+            yR = dryR + (yR - dryR) * m;
         }
 
         // ping-pong delay
+        const float dw = dOnSm.getNextValue();
         float readPos = (float) delayW - delayTimeSm.getNextValue();
         if (readPos < 0.f) readPos += (float) delaySize;
         const int i0 = (int) readPos, i1 = (i0 + 1) % delaySize;
@@ -468,29 +662,68 @@ void ScattrProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::Midi
         const float dR = delayBuf[1][(size_t) i0] + (delayBuf[1][(size_t) i1] - delayBuf[1][(size_t) i0]) * dfr;
         fbLp[0] += 0.45f * (dL - fbLp[0]);
         fbLp[1] += 0.45f * (dR - fbLp[1]);
-        delayBuf[0][(size_t) delayW] = yL + fbLp[1] * dFb;
-        delayBuf[1][(size_t) delayW] = yR + fbLp[0] * dFb;
+        delayBuf[0][(size_t) delayW] = (yL + fbLp[1] * dFb) * dw;
+        delayBuf[1][(size_t) delayW] = (yR + fbLp[0] * dFb) * dw;
         delayW = (delayW + 1) % delaySize;
-        yL += dL * dMix;
-        yR += dR * dMix;
+        yL += dL * dMix * dw;
+        yR += dR * dMix * dw;
 
         L[n] = yL;
         if (R != nullptr) R[n] = yR;
     }
 
-    // reverb (in place, wet/dry handled by the reverb's own levels)
-    if (rMix > 0.001f)
+    // reverb: runs on a wet-only copy and is blended in per sample, so bypassing fades instead of clicking
+    const bool revRunning = rOn || rOnSm.getCurrentValue() > 0.0005f;
+    if (revRunning)
     {
+        revActive = true;
+
+        struct Space { float sizeBase, sizeRange, dampBase, dampRange, preMs, width; };
+        static const Space spaces[4] = {
+            { 0.10f, 0.35f, 0.35f, 0.55f,  0.f, 0.8f },   // room
+            { 0.40f, 0.35f, 0.00f, 0.35f,  0.f, 1.0f },   // plate: dense and bright
+            { 0.62f, 0.30f, 0.20f, 0.55f, 18.f, 1.0f },   // hall
+            { 0.82f, 0.17f, 0.30f, 0.50f, 42.f, 1.0f }    // cathedral: huge, long, late
+        };
+        const auto& sp = spaces[juce::jlimit (0, 3, (int) prm ("rtype"))];
+
         juce::Reverb::Parameters rp;
-        rp.roomSize = rSize;
-        rp.damping = rDamp;
-        rp.wetLevel = rMix / 3.f;
-        rp.dryLevel = (1.f - rMix) / 2.f;
-        rp.width = 1.f;
+        rp.roomSize = juce::jmin (0.99f, sp.sizeBase + sp.sizeRange * rSize);
+        rp.damping = juce::jlimit (0.f, 1.f, sp.dampBase + sp.dampRange * rDamp);
+        rp.wetLevel = 1.f / 3.f;   // wet only (the reverb scales wet by 3)
+        rp.dryLevel = 0.f;
+        rp.width = sp.width;
         rp.freezeMode = 0.f;
         reverb.setParameters (rp);
-        if (R != nullptr) reverb.processStereo (L, R, numSamples);
-        else              reverb.processMono (L, numSamples);
+
+        if ((int) revL.size() < numSamples) { revL.resize ((size_t) numSamples); revR.resize ((size_t) numSamples); }
+        const int preN = juce::jlimit (0, preSize - 2, (int) (sp.preMs * 0.001 * sr));
+        for (int n = 0; n < numSamples; ++n)
+        {
+            const float inL = L[n], inR = R != nullptr ? R[n] : L[n];
+            preBuf[0][(size_t) preW] = inL;
+            preBuf[1][(size_t) preW] = inR;
+            int rd = preW - preN;
+            if (rd < 0) rd += preSize;
+            revL[(size_t) n] = preBuf[0][(size_t) rd];
+            revR[(size_t) n] = preBuf[1][(size_t) rd];
+            preW = (preW + 1) % preSize;
+        }
+
+        reverb.processStereo (revL.data(), revR.data(), numSamples);
+
+        for (int n = 0; n < numSamples; ++n)
+        {
+            const float m = rMix * rOnSm.getNextValue();
+            L[n] = L[n] * (1.f - m) + revL[(size_t) n] * m;
+            if (R != nullptr) R[n] = R[n] * (1.f - m) + revR[(size_t) n] * m;
+        }
+    }
+    else if (revActive)
+    {
+        reverb.reset();
+        for (auto& b : preBuf) std::fill (b.begin(), b.end(), 0.f);
+        revActive = false;
     }
 
     uiSample.store (cur);
