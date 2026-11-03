@@ -14,6 +14,12 @@ struct Sample
     float rootNote = -1.f;   // detected pitch as a (fractional) MIDI note, -1 = no clear pitch
     std::vector<std::pair<float, float>> peaks;
     std::atomic<bool> enabled { true };
+
+    // Playable region, normalised 0..1 across the file. Written by the UI, read by the audio thread.
+    std::atomic<float> startN { 0.f }, endN { 1.f };
+
+    // smallest allowed region (about 1024 source samples) so grains always have something to read
+    float minGapN() const { return juce::jlimit (0.002f, 0.5f, 1024.f / (float) juce::jmax (1, length)); }
 };
 
 class ScattrProcessor : public juce::AudioProcessor
@@ -90,6 +96,7 @@ private:
     int remaining = 0, holdTotal = 1, cur = -1, last = -1;
     double grainCountdown = 0.0, currentSr = 44100.0;
     int notesHeld = 0, heldNote = 60;
+    bool retrigger = false;   // set on every note-on: jump to a fresh random sample right away
     juce::Random rng;
 
     // effects

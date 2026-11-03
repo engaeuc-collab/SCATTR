@@ -21,6 +21,7 @@ juce::AudioProcessorValueTreeState::ParameterLayout makeLayout()
     add ("spray", "Spray",        0.f, 1.f,   0.1f,  1.f);
     add ("hold",  "Hold",         0.5f, 20.f, 4.f,   0.5f);
     add ("gap",   "Gap",          0.f, 5.f,   0.3f,  1.f);
+    add ("cycle", "Key Cycle",    0.05f, 20.f, 1.5f, 0.5f);   // seconds per sample while a key is held
     add ("width", "Width",        0.f, 1.f,   0.5f,  1.f);
     add ("amp",   "Amp",          0.f, 1.f,   0.7f,  1.f);
     add ("mtune", "Master Tune", -100.f, 100.f, 0.f, 1.f);   // cents
@@ -257,7 +258,7 @@ void ScattrProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::Midi
     for (const auto meta : midi)
     {
         const auto m = meta.getMessage();
-        if (m.isNoteOn())       { ++notesHeld; heldNote = m.getNoteNumber(); }
+        if (m.isNoteOn())       { ++notesHeld; heldNote = m.getNoteNumber(); retrigger = true; }
         else if (m.isNoteOff()) notesHeld = juce::jmax (0, notesHeld - 1);
         else if (m.isAllNotesOff() || m.isAllSoundOff()) notesHeld = 0;
     }
@@ -277,7 +278,7 @@ void ScattrProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::Midi
 
     auto prm = [this] (const char* id) { return apvts.getRawParameterValue (id)->load(); };
     const float sizeMs = prm ("size"), dens = prm ("dens"), pitch = prm ("pitch"), pjit = prm ("pjit"),
-                spray = prm ("spray"), holdS = prm ("hold"), gapS = prm ("gap"), width = prm ("width"),
+                spray = prm ("spray"), holdS = prm ("hold"), gapS = prm ("gap"), cycleS = prm ("cycle"), width = prm ("width"),
                 amp = prm ("amp");
     const bool active = prm ("drone") > 0.5f || notesHeld > 0;
 
@@ -320,16 +321,19 @@ void ScattrProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::Midi
 
         const Sample& s = *samples[(size_t) cur];
         const double srcLen = (double) s.length;
+        const double regS = (double) s.startN.load() * srcLen;
+        const double regE = (double) s.endN.load() * srcLen;
+        const double regLen = juce::jmax (1.0, regE - regS);
         // tuned: shift this sample from its own detected pitch to the target note
         const float keyOff = (tuneOn && s.rootNote >= 0.f) ? targetNote - s.rootNote : pitchOff;
         const float semis = pitch + keyOff + masterTune + (rng.nextFloat() * 2.f - 1.f) * pjit;
         const double inc = std::pow (2.0, semis / 12.0) * s.sampleRate / sr;
-        const int len = juce::jmin (len0, (int) ((srcLen - 4.0) / inc));
+        const int len = juce::jmin (len0, (int) ((regLen - 4.0) / inc));
         if (len <= 32) return;
 
         const double prog = 1.0 - (double) remaining / (double) holdTotal;
-        double start = (prog + (rng.nextFloat() - 0.5f) * spray) * srcLen;
-        start = juce::jlimit (0.0, juce::jmax (0.0, srcLen - (double) len * inc - 3.0), start);
+        double start = regS + (prog + (rng.nextFloat() - 0.5f) * spray) * regLen;
+        start = juce::jlimit (regS, juce::jmax (regS, regE - (double) len * inc - 3.0), start);
 
         const float pan = 0.5f + (rng.nextFloat() - 0.5f) * width;
         slot->active = true;
@@ -342,6 +346,20 @@ void ScattrProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::Midi
         slot->gr = std::sin (pan * juce::MathConstants<float>::halfPi) * 1.4142f;
         uiGrain.store ((float) (start / srcLen));
     };
+
+    // a key was just pressed: jump to a new random sample immediately (no waiting out the rest/bloom)
+    if (retrigger)
+    {
+        retrigger = false;
+        const int i = pickSample();
+        if (i >= 0)
+        {
+            cur = last = i;
+            phase = Phase::Play;
+            holdTotal = remaining = juce::jmax (1, (int) (cycleS * sr));
+            grainCountdown = 0.0;
+        }
+    }
 
     for (int n = 0; n < numSamples; ++n)
     {
@@ -357,7 +375,7 @@ void ScattrProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::Midi
                     {
                         cur = last = i;
                         phase = Phase::Play;
-                        holdTotal = remaining = juce::jmax (1, (int) (holdS * sr));
+                        holdTotal = remaining = juce::jmax (1, (int) ((notesHeld > 0 ? cycleS : holdS) * sr));
                         grainCountdown = 0.0;
                     }
                 }
@@ -479,6 +497,8 @@ void ScattrProcessor::getStateInformation (juce::MemoryBlock& dest)
         juce::ValueTree v ("S");
         v.setProperty ("path", s->path, nullptr);
         v.setProperty ("on", s->enabled.load(), nullptr);
+        v.setProperty ("start", s->startN.load(), nullptr);
+        v.setProperty ("end", s->endN.load(), nullptr);
         sl.appendChild (v, nullptr);
     }
     st.appendChild (sl, nullptr);
@@ -502,7 +522,13 @@ void ScattrProcessor::setStateInformation (const void* data, int size)
         clearSamples();
         for (auto v : sl)
             if (addSampleFile (juce::File (v["path"].toString())))
-                samples.back()->enabled = (bool) v["on"];
+            {
+                auto& s = *samples.back();
+                s.enabled = (bool) v["on"];
+                const float a = juce::jlimit (0.f, 1.f, (float) v.getProperty ("start", 0.f));
+                const float b = juce::jlimit (0.f, 1.f, (float) v.getProperty ("end", 1.f));
+                if (b - a >= s.minGapN()) { s.startN = a; s.endN = b; }
+            }
     }
 }
 

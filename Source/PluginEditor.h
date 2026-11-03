@@ -59,6 +59,10 @@ public:
     void paint (juce::Graphics&) override;
     void resized() override;
     void mouseDown (const juce::MouseEvent&) override;
+    void mouseDrag (const juce::MouseEvent&) override;
+    void mouseUp (const juce::MouseEvent&) override;
+    void mouseMove (const juce::MouseEvent&) override;
+    void mouseDoubleClick (const juce::MouseEvent&) override;
     void mouseWheelMove (const juce::MouseEvent&, const juce::MouseWheelDetails&) override;
 
     bool isInterestedInFileDrag (const juce::StringArray&) override { return true; }
@@ -69,6 +73,8 @@ private:
     void drawVine (juce::Graphics&);
     void applyScale (float newScale);
     juce::Rectangle<float> waveRect() const { return { 18.f, 72.f, (float) getWidth() - 36.f, 170.f }; }
+    juce::Rectangle<float> waveInner() const { return waveRect().reduced (10.f, 0.f); }
+    int hitHandle (float x) const;   // 0 = none, 1 = start bar, 2 = end bar (for the shown sample)
 
     static constexpr int listY = 268, rowH = 18, maxRows = 6;
 
@@ -81,7 +87,7 @@ private:
 
     ScattrProcessor& proc;
     ScattrLNF lnf;
-    std::array<Knob, 18> knobs;
+    std::array<Knob, 19> knobs;
     juce::TextButton loadBtn { "PLANT" }, clearBtn { "CLEAR" };
     juce::TextButton typeBtn { "LP" };
     juce::TextButton scaleBtn { "100%" };
@@ -95,7 +101,10 @@ private:
     std::vector<Tick> ticks;
     float lastGrain = -1.f, progress = 0.f, anim = 0.f;
     int shown = -1, listOff = 0;
-    bool playing = false;
+    int pinned = -1;        // sample chosen for trimming (-1 = waveform follows playback)
+    int playIdx = -1;       // sample the engine is playing right now
+    int dragHandle = 0;     // 0 none, 1 start bar, 2 end bar
+    bool playing = false, shownPlaying = false;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (ScattrEditor)
 };

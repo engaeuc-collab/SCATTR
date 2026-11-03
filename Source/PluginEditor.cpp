@@ -113,14 +113,14 @@ ScattrEditor::ScattrEditor (ScattrProcessor& p) : juce::AudioProcessorEditor (&p
     setSize (780, 650);
 
     struct Def { const char* id; const char* text; const char* suffix; int dp; };
-    static const Def defs[18] = {
+    static const Def defs[19] = {
         { "size", "seed size", " ms", 0 }, { "dens", "rain", " /s", 0 }, { "pitch", "pitch", " st", 1 },
         { "pjit", "wind", " st", 1 }, { "spray", "scatter", "", 2 }, { "hold", "bloom", " s", 1 },
         { "gap", "rest", " s", 2 }, { "amp", "sun", "", 2 },
         { "cutoff", "cutoff", " Hz", 0 }, { "reso", "reso", "", 2 }, { "drive", "drive", "", 2 },
         { "dtime", "time", " ms", 0 }, { "dfb", "feedback", "", 2 }, { "dmix", "echo mix", "", 2 },
         { "rsize", "size", "", 2 }, { "rdamp", "damp", "", 2 }, { "rmix", "reverb mix", "", 2 },
-        { "mtune", "master tune", " ct", 0 }
+        { "mtune", "master tune", " ct", 0 }, { "cycle", "cycle", " s", 2 }
     };
 
     for (size_t i = 0; i < knobs.size(); ++i)
@@ -189,7 +189,7 @@ ScattrEditor::ScattrEditor (ScattrProcessor& p) : juce::AudioProcessorEditor (&p
                                   repaint();
                               });
     };
-    clearBtn.onClick = [this] { proc.clearSamples(); shown = -1; listOff = 0; repaint(); };
+    clearBtn.onClick = [this] { proc.clearSamples(); shown = -1; pinned = -1; listOff = 0; repaint(); };
 
     applyScale (proc.editorScale.load());
     startTimerHz (30);
@@ -217,12 +217,13 @@ void ScattrEditor::resized()
     tuneBtn.setBounds (w - 18 - 80, 244, 80, 22);
     scaleBtn.setBounds (w - 18 - 80 - 8 - 80 - 8 - 80 - 8 - 80, 26, 80, 26);
 
-    const int cw1 = (w - 36) / 9, cw2 = (w - 36) / 10;
+    const int cw1 = (w - 36) / 10, cw2 = (w - 36) / 10;
     for (size_t i = 0; i < knobs.size(); ++i)
     {
-        if (i < 8 || i == 17)   // grain row (master tune sits at the end of it)
+        if (i < 8 || i == 17 || i == 18)   // grain row (key cycle, then master tune, sit at the end of it)
         {
-            const int x = 18 + (i == 17 ? 8 : (int) i) * cw1;
+            const int col = i < 8 ? (int) i : (i == 18 ? 8 : 9);
+            const int x = 18 + col * cw1;
             knobs[i].label.setBounds (x, 414, cw1, 18);
             knobs[i].slider.setBounds (x, 430, cw1, 82);
         }
@@ -243,17 +244,77 @@ void ScattrEditor::filesDropped (const juce::StringArray& files, int, int)
     repaint();
 }
 
+int ScattrEditor::hitHandle (float x) const
+{
+    if (shown < 0 || shown >= (int) proc.samples.size()) return 0;
+    const auto& s = *proc.samples[(size_t) shown];
+    const auto in = waveInner();
+    const float ds = std::abs (x - (in.getX() + s.startN.load() * in.getWidth()));
+    const float de = std::abs (x - (in.getX() + s.endN.load() * in.getWidth()));
+    if (juce::jmin (ds, de) > 12.f) return 0;
+    if (ds == de) return x < in.getX() + s.startN.load() * in.getWidth() ? 1 : 2;
+    return ds < de ? 1 : 2;
+}
+
 void ScattrEditor::mouseDown (const juce::MouseEvent& e)
 {
+    if (waveRect().contains (e.position))
+    {
+        dragHandle = hitHandle (e.position.x);
+        if (dragHandle != 0) pinned = shown;   // grabbing a bar locks the display onto that sample
+        repaint();
+        return;
+    }
+
     if (e.y >= listY && e.y < listY + rowH * maxRows)
     {
         const int idx = listOff + (e.y - listY) / rowH;
         if (idx >= 0 && idx < (int) proc.samples.size())
         {
-            auto& en = proc.samples[(size_t) idx]->enabled;
-            en = ! en.load();
+            if (e.x < 46)   // leaf icon: dormant / awake
+            {
+                auto& en = proc.samples[(size_t) idx]->enabled;
+                en = ! en.load();
+            }
+            else            // name: pick this sample for trimming (click again to follow playback)
+                pinned = (pinned == idx ? -1 : idx);
             repaint();
         }
+    }
+}
+
+void ScattrEditor::mouseDrag (const juce::MouseEvent& e)
+{
+    if (dragHandle == 0 || shown < 0 || shown >= (int) proc.samples.size()) return;
+    auto& s = *proc.samples[(size_t) shown];
+    const auto in = waveInner();
+    const float n = juce::jlimit (0.f, 1.f, (e.position.x - in.getX()) / in.getWidth());
+    const float gap = s.minGapN();
+    if (dragHandle == 1) s.startN = juce::jlimit (0.f, s.endN.load() - gap, n);
+    else                 s.endN   = juce::jlimit (s.startN.load() + gap, 1.f, n);
+    repaint();
+}
+
+void ScattrEditor::mouseUp (const juce::MouseEvent&)
+{
+    dragHandle = 0;
+    repaint();
+}
+
+void ScattrEditor::mouseMove (const juce::MouseEvent& e)
+{
+    const bool over = waveRect().contains (e.position) && hitHandle (e.position.x) != 0;
+    setMouseCursor (over ? juce::MouseCursor::LeftRightResizeCursor : juce::MouseCursor::NormalCursor);
+}
+
+void ScattrEditor::mouseDoubleClick (const juce::MouseEvent& e)
+{
+    if (waveRect().contains (e.position) && shown >= 0 && shown < (int) proc.samples.size())
+    {
+        auto& s = *proc.samples[(size_t) shown];
+        s.startN = 0.f;
+        s.endN = 1.f;
+        repaint();
     }
 }
 
@@ -273,15 +334,19 @@ void ScattrEditor::timerCallback()
     if (typeBtn.getButtonText() != ft[fi]) typeBtn.setButtonText (ft[fi]);
 
     const int c = proc.uiSample.load();
-    if (c >= 0) shown = c;
+    playIdx = c;
+    if (pinned >= (int) proc.samples.size()) pinned = -1;
+    if (pinned >= 0)    shown = pinned;
+    else if (c >= 0)    shown = c;
     if (shown >= (int) proc.samples.size()) shown = -1;
     if (shown < 0 && ! proc.samples.empty()) shown = (int) proc.samples.size() - 1;
 
     playing  = proc.uiPlaying.load();
+    shownPlaying = playing && playIdx == shown;
     progress = proc.uiProgress.load();
 
     const float gp = proc.uiGrain.load();
-    if (playing && gp != lastGrain)
+    if (shownPlaying && gp != lastGrain)
     {
         lastGrain = gp;
         ticks.push_back ({ gp, juce::Random::getSystemRandom().nextFloat(), 1.f });
@@ -366,7 +431,7 @@ void ScattrEditor::paint (juce::Graphics& g)
         const auto inner = wr.reduced (10.f, 0.f);
         const float cy = wr.getCentreY(), hh = wr.getHeight() * 0.44f;
 
-        const float al = playing ? 1.f : 0.45f;
+        const float al = shownPlaying ? 1.f : pinned >= 0 ? 0.75f : 0.45f;
         g.setGradientFill (juce::ColourGradient (acc.withAlpha (al), 0.f, wr.getY(),
                                                  accDark.withAlpha (al), 0.f, wr.getBottom(), false));
         for (int i = 0; i < n; ++i)
@@ -376,7 +441,30 @@ void ScattrEditor::paint (juce::Graphics& g)
                         juce::jmax (1.5f, (pk[(size_t) i].second - pk[(size_t) i].first) * hh));
         }
 
-        if (playing)
+        {
+            // trim bars: dim everything outside the playable region, then draw the two handles
+            const auto& sm = *proc.samples[(size_t) shown];
+            const float xs = inner.getX() + sm.startN.load() * inner.getWidth();
+            const float xe = inner.getX() + sm.endN.load() * inner.getWidth();
+            g.setColour (soil.withAlpha (0.72f));
+            g.fillRect (inner.getX(), wr.getY() + 1.f, xs - inner.getX(), wr.getHeight() - 2.f);
+            g.fillRect (xe, wr.getY() + 1.f, inner.getRight() - xe, wr.getHeight() - 2.f);
+
+            for (int h = 1; h <= 2; ++h)
+            {
+                const float x = h == 1 ? xs : xe, dir = h == 1 ? 1.f : -1.f;
+                const bool hot = dragHandle == h;
+                g.setColour (hot ? amber : grass);
+                g.drawLine (x, wr.getY() + 4.f, x, wr.getBottom() - 4.f, hot ? 2.5f : 1.8f);
+                juce::Path tri;
+                tri.addTriangle (x, cy - 7.f, x, cy + 7.f, x + dir * 9.f, cy);
+                g.fillPath (tri);
+                g.fillRoundedRectangle (x - 4.f, wr.getY() + 3.f, 8.f, 5.f, 2.f);
+                g.fillRoundedRectangle (x - 4.f, wr.getBottom() - 8.f, 8.f, 5.f, 2.f);
+            }
+        }
+
+        if (shownPlaying)
         {
             // fireflies for each new grain
             for (auto& t : ticks)
@@ -392,7 +480,9 @@ void ScattrEditor::paint (juce::Graphics& g)
                 g.fillEllipse (fx - 1.5f, fy - 1.5f, 3.f, 3.f);
             }
 
-            const float px = inner.getX() + progress * inner.getWidth();
+            const auto& sp = *proc.samples[(size_t) shown];
+            const float rs = sp.startN.load(), re = sp.endN.load();
+            const float px = inner.getX() + (rs + progress * (re - rs)) * inner.getWidth();
             g.setColour (amber.withAlpha (0.8f));
             g.drawLine (px, wr.getY() + 6.f, px, wr.getBottom() - 6.f, 1.2f);
         }
@@ -402,6 +492,8 @@ void ScattrEditor::paint (juce::Graphics& g)
     g.setFont (serif (14.f, true));
     g.setColour (dim);
     juce::String st = proc.samples.empty() ? "the grove is empty"
+                    : pinned >= 0 && pinned < (int) proc.samples.size()
+                          ? "trimming: " + proc.samples[(size_t) pinned]->name + "   (click its name again to follow playback)"
                     : playing && shown >= 0 ? "blooming: " + proc.samples[(size_t) shown]->name
                                             : "resting...";
     g.drawText (st, 18, 246, getWidth() - 36 - 90, 18, juce::Justification::centredLeft);
@@ -416,7 +508,14 @@ void ScattrEditor::paint (juce::Graphics& g)
         const bool on = s.enabled.load();
         const auto row = juce::Rectangle<int> (18, listY + r * rowH, getWidth() - 36, rowH);
 
-        const bool isCur = playing && i == shown;
+        const bool isCur = playing && i == playIdx;
+        if (i == pinned)
+        {
+            g.setColour (amber.withAlpha (0.18f));
+            g.fillRoundedRectangle (row.toFloat(), 6.f);
+            g.setColour (amber.withAlpha (0.6f));
+            g.drawRoundedRectangle (row.toFloat().reduced (0.5f), 6.f, 1.f);
+        }
         if (isCur)
         {
             g.setColour (moss);
