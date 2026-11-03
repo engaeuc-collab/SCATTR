@@ -113,13 +113,14 @@ ScattrEditor::ScattrEditor (ScattrProcessor& p) : juce::AudioProcessorEditor (&p
     setSize (780, 650);
 
     struct Def { const char* id; const char* text; const char* suffix; int dp; };
-    static const Def defs[17] = {
+    static const Def defs[18] = {
         { "size", "seed size", " ms", 0 }, { "dens", "rain", " /s", 0 }, { "pitch", "pitch", " st", 1 },
         { "pjit", "wind", " st", 1 }, { "spray", "scatter", "", 2 }, { "hold", "bloom", " s", 1 },
         { "gap", "rest", " s", 2 }, { "amp", "sun", "", 2 },
         { "cutoff", "cutoff", " Hz", 0 }, { "reso", "reso", "", 2 }, { "drive", "drive", "", 2 },
         { "dtime", "time", " ms", 0 }, { "dfb", "feedback", "", 2 }, { "dmix", "echo mix", "", 2 },
-        { "rsize", "size", "", 2 }, { "rdamp", "damp", "", 2 }, { "rmix", "reverb mix", "", 2 }
+        { "rsize", "size", "", 2 }, { "rdamp", "damp", "", 2 }, { "rmix", "reverb mix", "", 2 },
+        { "mtune", "master tune", " ct", 0 }
     };
 
     for (size_t i = 0; i < knobs.size(); ++i)
@@ -216,12 +217,12 @@ void ScattrEditor::resized()
     tuneBtn.setBounds (w - 18 - 80, 244, 80, 22);
     scaleBtn.setBounds (w - 18 - 80 - 8 - 80 - 8 - 80 - 8 - 80, 26, 80, 26);
 
-    const int cw1 = (w - 36) / 8, cw2 = (w - 36) / 10;
+    const int cw1 = (w - 36) / 9, cw2 = (w - 36) / 10;
     for (size_t i = 0; i < knobs.size(); ++i)
     {
-        if (i < 8)
+        if (i < 8 || i == 17)   // grain row (master tune sits at the end of it)
         {
-            const int x = 18 + (int) i * cw1;
+            const int x = 18 + (i == 17 ? 8 : (int) i) * cw1;
             knobs[i].label.setBounds (x, 414, cw1, 18);
             knobs[i].slider.setBounds (x, 430, cw1, 82);
         }

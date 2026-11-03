@@ -81,7 +81,7 @@ private:
 
     ScattrProcessor& proc;
     ScattrLNF lnf;
-    std::array<Knob, 17> knobs;
+    std::array<Knob, 18> knobs;
     juce::TextButton loadBtn { "PLANT" }, clearBtn { "CLEAR" };
     juce::TextButton typeBtn { "LP" };
     juce::TextButton scaleBtn { "100%" };

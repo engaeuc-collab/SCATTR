@@ -23,6 +23,7 @@ juce::AudioProcessorValueTreeState::ParameterLayout makeLayout()
     add ("gap",   "Gap",          0.f, 5.f,   0.3f,  1.f);
     add ("width", "Width",        0.f, 1.f,   0.5f,  1.f);
     add ("amp",   "Amp",          0.f, 1.f,   0.7f,  1.f);
+    add ("mtune", "Master Tune", -100.f, 100.f, 0.f, 1.f);   // cents
 
     // effects
     add ("cutoff", "Filter Cutoff", 20.f, 20000.f, 20000.f, 0.3f);
@@ -286,6 +287,7 @@ void ScattrProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::Midi
     const float norm = amp / std::sqrt (juce::jmax (1.0f, dens * sizeMs * 0.001f));
     const float pitchOff = notesHeld > 0 ? (float) (heldNote - 60) : 0.f;
     const bool tuneOn = prm ("tune") > 0.5f;
+    const float masterTune = prm ("mtune") * 0.01f;   // cents -> semitones
     const float targetNote = notesHeld > 0 ? (float) heldNote : 60.f;   // C4 when drifting with no key held
 
     // effect settings
@@ -320,7 +322,7 @@ void ScattrProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::Midi
         const double srcLen = (double) s.length;
         // tuned: shift this sample from its own detected pitch to the target note
         const float keyOff = (tuneOn && s.rootNote >= 0.f) ? targetNote - s.rootNote : pitchOff;
-        const float semis = pitch + keyOff + (rng.nextFloat() * 2.f - 1.f) * pjit;
+        const float semis = pitch + keyOff + masterTune + (rng.nextFloat() * 2.f - 1.f) * pjit;
         const double inc = std::pow (2.0, semis / 12.0) * s.sampleRate / sr;
         const int len = juce::jmin (len0, (int) ((srcLen - 4.0) / inc));
         if (len <= 32) return;
