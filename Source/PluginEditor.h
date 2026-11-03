@@ -70,13 +70,22 @@ struct ScattrLNF : public juce::LookAndFeel_V4
     juce::Font getLabelFont (juce::Label&) override { return Scat::serif (13.f); }
 };
 
-class ScattrEditor : public juce::AudioProcessorEditor,
-                     public juce::FileDragAndDropTarget,
-                     private juce::Timer
+// ---------------------------------------------------------------------------------------------
+// The whole UI lives in this panel, drawn at a fixed 780 x 570 design size.
+// The editor window scales it with a transform and resizes itself to match, so the zoom level is
+// owned by us (and survives closing / reopening the window) instead of being fought over with the host.
+// ---------------------------------------------------------------------------------------------
+class ScattrPanel : public juce::Component,
+                    public juce::FileDragAndDropTarget,
+                    private juce::Timer
 {
 public:
-    explicit ScattrEditor (ScattrProcessor&);
-    ~ScattrEditor() override;
+    static constexpr int baseW = 780, baseH = 570;
+
+    explicit ScattrPanel (ScattrProcessor&);
+    ~ScattrPanel() override;
+
+    std::function<void (float)> onScaleChosen;   // editor resizes itself when the user picks a zoom
 
     void paint (juce::Graphics&) override;
     void resized() override;
@@ -92,14 +101,26 @@ public:
 
 private:
     void timerCallback() override;
-    void drawVine (juce::Graphics&);
-    void applyScale (float newScale);
     void applyTheme (int idx);
-    juce::Rectangle<float> waveRect() const { return { 18.f, 72.f, (float) getWidth() - 36.f, 170.f }; }
-    juce::Rectangle<float> waveInner() const { return waveRect().reduced (10.f, 0.f); }
+    void setTab (int t);
+
+    void paintGrainsTab (juce::Graphics&);
+    void paintFxTab (juce::Graphics&);
+    void paintWave (juce::Graphics&);
+    void paintSamples (juce::Graphics&);
+    void drawGroup (juce::Graphics&, juce::Rectangle<float>, const juce::String&);
+    void drawVine (juce::Graphics&);
+
+    // layout (design units)
+    juce::Rectangle<float> waveRect() const   { return { 18.f, 76.f, 480.f, 142.f }; }
+    juce::Rectangle<float> sampleRect() const { return { 510.f, 76.f, 252.f, 142.f }; }
+    juce::Rectangle<float> grainPanel() const  { return { 18.f, 246.f, 744.f, 130.f }; }
+    juce::Rectangle<float> motionPanel() const { return { 18.f, 384.f, 744.f, 130.f }; }
+    juce::Rectangle<float> fxPanel (int k) const { return { 18.f, 80.f + (float) k * 144.f, 744.f, 136.f }; }
+    juce::Rectangle<float> waveInner() const  { return waveRect().reduced (10.f, 0.f); }
     int hitHandle (float x) const;   // 0 = none, 1 = start bar, 2 = end bar (for the shown sample)
 
-    static constexpr int listY = 268, rowH = 18, maxRows = 6;
+    static constexpr int rowH = 20, maxRows = 5, listTop = 34;
 
     struct Knob
     {
@@ -108,10 +129,14 @@ private:
         std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> attach;
     };
 
+    static bool onGrainsTab (size_t knobIndex) { return knobIndex <= 7 || knobIndex >= 17; }
+
     ScattrProcessor& proc;
     ScattrLNF lnf;
     Scat::Palette pal;
+    int curTheme = 0, tab = 0;
     std::array<Knob, 20> knobs;
+    std::array<juce::TextButton, 2> tabBtn;
     juce::TextButton loadBtn { "PLANT" }, clearBtn { "CLEAR" };
     juce::TextButton typeBtn { "LP" };
     juce::TextButton scaleBtn { "100%" };
@@ -130,6 +155,22 @@ private:
     int playIdx = -1;       // sample the engine is playing right now
     int dragHandle = 0;     // 0 none, 1 start bar, 2 end bar
     bool playing = false, shownPlaying = false;
+
+    JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (ScattrPanel)
+};
+
+// Thin plugin window: just hosts the panel at the saved zoom.
+class ScattrEditor : public juce::AudioProcessorEditor
+{
+public:
+    explicit ScattrEditor (ScattrProcessor&);
+    void resized() override;
+
+private:
+    void applyScale (float s);
+
+    ScattrProcessor& proc;
+    ScattrPanel panel;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (ScattrEditor)
 };
