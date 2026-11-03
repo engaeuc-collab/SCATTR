@@ -1,4 +1,5 @@
 #include "PluginEditor.h"
+#include "ArtData.h"   // embedded theme backdrops (Backgrounds/ folder)
 
 using namespace Scat;
 
@@ -100,6 +101,41 @@ void drawBlossom (juce::Graphics& g, float x, float y, float r, juce::Colour pet
     g.setColour (centre);
     g.fillEllipse (x - r * 0.2f, y - r * 0.2f, r * 0.4f, r * 0.4f);
 }
+
+// A raised, glossy key. Lit keys glow in the accent colour; everything is drawn inside the button's own
+// bounds (hence the 2 px margin) so the glow never gets clipped.
+void drawKeyBody (juce::Graphics& g, juce::Rectangle<float> bounds, bool selected, bool over, bool down, const Scat::Palette& pal)
+{
+    const auto r = bounds.reduced (2.f);
+    const float cr = 8.f;
+
+    if (selected)
+    {
+        g.setColour (pal.acc.withAlpha (0.10f));
+        g.fillRoundedRectangle (r.expanded (2.f), cr + 2.f);
+        g.setColour (pal.acc.withAlpha (0.16f));
+        g.fillRoundedRectangle (r.expanded (1.f), cr + 1.f);
+    }
+    else if (! down)
+    {
+        g.setColour (juce::Colours::black.withAlpha (0.28f));
+        g.fillRoundedRectangle (r.translated (0.f, 1.5f), cr);
+    }
+
+    const auto top = selected ? pal.accDark.brighter (0.35f) : down ? pal.soil : over ? pal.moss.brighter (0.3f) : pal.moss.brighter (0.1f);
+    const auto bot = selected ? pal.accDark.darker (0.35f)   : down ? pal.moss : over ? pal.moss                 : pal.soil;
+    g.setGradientFill (juce::ColourGradient (top, 0.f, r.getY(), bot, 0.f, r.getBottom(), false));
+    g.fillRoundedRectangle (r, cr);
+
+    // top gloss
+    const auto gl = r.reduced (1.5f, 1.f).withHeight (r.getHeight() * 0.48f);
+    g.setGradientFill (juce::ColourGradient (juce::Colours::white.withAlpha (down ? 0.04f : 0.22f), 0.f, gl.getY(),
+                                             juce::Colours::white.withAlpha (0.f), 0.f, gl.getBottom(), false));
+    g.fillRoundedRectangle (gl, cr - 1.f);
+
+    g.setColour (selected ? pal.acc.withAlpha (0.95f) : over ? pal.acc.withAlpha (0.8f) : pal.bark);
+    g.drawRoundedRectangle (r, cr, 1.2f);
+}
 }
 
 // ---------------------------------------------------------------- look and feel
@@ -121,67 +157,115 @@ void ScattrLNF::setPalette (const Scat::Palette& p)
 }
 
 void ScattrLNF::drawRotarySlider (juce::Graphics& g, int x, int y, int w, int h, float pos,
-                                  float a0, float a1, juce::Slider&)
+                                  float a0, float a1, juce::Slider& sl)
 {
     auto r = juce::Rectangle<float> ((float) x, (float) y, (float) w, (float) h).reduced (7.f);
     const auto c = r.getCentre();
     const float rad = juce::jmin (r.getWidth(), r.getHeight()) * 0.5f;
     const float a = a0 + pos * (a1 - a0);
+    const bool hot = sl.isMouseOverOrDragging();
+    const auto white = juce::Colours::white, black = juce::Colours::black;
 
-    // wooden stump
-    g.setColour (pal.soil);
-    g.fillEllipse (c.x - rad, c.y - rad, rad * 2.f, rad * 2.f);
-    g.setColour (pal.bark);
-    g.drawEllipse (c.x - rad, c.y - rad, rad * 2.f, rad * 2.f, 2.f);
-    g.setColour (pal.bark.withAlpha (0.35f));
-    g.drawEllipse (c.x - rad * 0.55f, c.y - rad * 0.55f, rad * 1.1f, rad * 1.1f, 1.f);
+    // soft drop shadow
+    for (int i = 3; i >= 1; --i)
+    {
+        const float e = (float) i * 2.f;
+        g.setColour (black.withAlpha (0.13f));
+        g.fillEllipse (c.x - rad - e, c.y - rad - e + 4.f, (rad + e) * 2.f, (rad + e) * 2.f);
+    }
 
-    // growth arc
+    // wooden stump: domed, lit from the top-left
+    {
+        juce::ColourGradient body (pal.bark.brighter (0.45f), c.x - rad * 0.45f, c.y - rad * 0.55f,
+                                   pal.soil.darker (0.6f),    c.x + rad * 0.55f, c.y + rad * 0.75f, true);
+        body.addColour (0.55, pal.soil.brighter (0.1f));
+        g.setGradientFill (body);
+        g.fillEllipse (c.x - rad, c.y - rad, rad * 2.f, rad * 2.f);
+
+        g.setGradientFill (juce::ColourGradient (white.withAlpha (hot ? 0.55f : 0.38f), c.x, c.y - rad,
+                                                 black.withAlpha (0.45f), c.x, c.y + rad, false));
+        g.drawEllipse (c.x - rad + 0.8f, c.y - rad + 0.8f, rad * 2.f - 1.6f, rad * 2.f - 1.6f, 1.6f);
+    }
+
+    // sunken centre cap (the opposite light direction makes it read as a dish)
+    {
+        const float ic = rad * 0.62f;
+        g.setGradientFill (juce::ColourGradient (pal.soil.darker (0.5f), c.x, c.y - ic,
+                                                 pal.moss.brighter (0.15f), c.x, c.y + ic, false));
+        g.fillEllipse (c.x - ic, c.y - ic, ic * 2.f, ic * 2.f);
+        g.setGradientFill (juce::ColourGradient (black.withAlpha (0.5f), c.x, c.y - ic,
+                                                 white.withAlpha (0.18f), c.x, c.y + ic, false));
+        g.drawEllipse (c.x - ic, c.y - ic, ic * 2.f, ic * 2.f, 1.2f);
+    }
+
+    // growth arc with a glow
     const float ar = rad + 4.f;
     juce::Path track, val;
     track.addCentredArc (c.x, c.y, ar, ar, 0.f, a0, a1, true);
     val.addCentredArc (c.x, c.y, ar, ar, 0.f, a0, a, true);
+    g.setColour (black.withAlpha (0.35f));
+    g.strokePath (track, juce::PathStrokeType (4.5f));
     g.setColour (pal.line);
     g.strokePath (track, juce::PathStrokeType (2.5f));
-    g.setColour (pal.acc);
-    g.strokePath (val, juce::PathStrokeType (3.f));
 
-    // leaf pointer
+    if (pos > 0.001f)
+    {
+        auto rounded = [] (float t) { return juce::PathStrokeType (t, juce::PathStrokeType::curved, juce::PathStrokeType::rounded); };
+        g.setColour (pal.acc.withAlpha (hot ? 0.20f : 0.14f));
+        g.strokePath (val, rounded (7.f));
+        g.setColour (pal.acc.withAlpha (0.30f));
+        g.strokePath (val, rounded (5.f));
+        g.setColour (pal.acc);
+        g.strokePath (val, rounded (3.f));
+        g.setColour (pal.acc.brighter (0.6f).withAlpha (0.7f));
+        g.strokePath (val, rounded (1.1f));
+    }
+
+    // glowing bead at the end of the arc
+    {
+        const float bx = c.x + std::sin (a) * ar, by = c.y - std::cos (a) * ar;
+        g.setGradientFill (juce::ColourGradient (pal.acc.brighter (0.6f).withAlpha (hot ? 0.95f : 0.75f), bx, by,
+                                                 pal.acc.withAlpha (0.f), bx + 7.f, by, true));
+        g.fillEllipse (bx - 7.f, by - 7.f, 14.f, 14.f);
+        g.setColour (white.withAlpha (0.9f));
+        g.fillEllipse (bx - 1.8f, by - 1.8f, 3.6f, 3.6f);
+    }
+
+    // leaf pointer (with its own little shadow)
     const auto t = juce::AffineTransform::translation (0.f, -rad * 0.2f)
                        .followedBy (juce::AffineTransform::rotation (a))
                        .followedBy (juce::AffineTransform::translation (c.x, c.y));
-    g.setColour (pal.amber);
-    g.fillPath (leafPath (rad * 0.75f, rad * 0.26f), t);
+    const auto leaf = Scat::leafPath (rad * 0.75f, rad * 0.26f);
+    g.setColour (black.withAlpha (0.35f));
+    g.fillPath (leaf, t.translated (1.2f, 2.f));
+    g.setGradientFill (juce::ColourGradient (pal.amber.brighter (0.3f), c.x, c.y - rad,
+                                             pal.amber.darker (0.25f), c.x, c.y + rad * 0.3f, false));
+    g.fillPath (leaf, t);
+    juce::Path rib;
+    rib.startNewSubPath (0.f, 0.f);
+    rib.lineTo (0.f, -rad * 0.75f * 0.85f);
+    g.setColour (pal.amber.darker (0.6f).withAlpha (0.7f));
+    g.strokePath (rib, juce::PathStrokeType (1.f), t);
 }
 
 void ScattrLNF::drawButtonBackground (juce::Graphics& g, juce::Button& b, const juce::Colour&, bool over, bool down)
 {
-    auto r = b.getLocalBounds().toFloat().reduced (0.5f);
-    const bool selected = b.getToggleState();   // tab buttons are toggles; ordinary buttons never are
-    g.setColour (selected ? pal.accDark : down ? pal.moss.brighter (0.2f) : over ? pal.moss : pal.soil);
-    g.fillRoundedRectangle (r, 8.f);
-    g.setColour (selected || over ? pal.acc : pal.bark);
-    g.drawRoundedRectangle (r, 8.f, 1.3f);
+    // tab buttons are toggles; ordinary buttons never are
+    drawKeyBody (g, b.getLocalBounds().toFloat(), b.getToggleState(), over, down, pal);
 }
 
-void ScattrLNF::drawToggleButton (juce::Graphics& g, juce::ToggleButton& b, bool, bool)
+void ScattrLNF::drawToggleButton (juce::Graphics& g, juce::ToggleButton& b, bool over, bool down)
 {
-    auto r = b.getLocalBounds().toFloat().reduced (0.5f);
-    if (b.getToggleState())
-    {
-        g.setColour (pal.accDark);
-        g.fillRoundedRectangle (r, 8.f);
-        g.setColour (pal.ink);
-    }
-    else
-    {
-        g.setColour (pal.soil);
-        g.fillRoundedRectangle (r, 8.f);
-        g.setColour (pal.bark);
-        g.drawRoundedRectangle (r, 8.f, 1.3f);
-        g.setColour (pal.dim);
-    }
+    const bool on = b.getToggleState();
+    drawKeyBody (g, b.getLocalBounds().toFloat(), on, over, down, pal);
+
     g.setFont (serif (14.f));
+    if (on)
+    {
+        g.setColour (juce::Colours::black.withAlpha (0.35f));
+        g.drawText (b.getButtonText(), b.getLocalBounds().translated (0, 1), juce::Justification::centred);
+    }
+    g.setColour (on ? pal.ink : pal.dim);
     g.drawText (b.getButtonText(), b.getLocalBounds(), juce::Justification::centred);
 }
 
@@ -356,6 +440,7 @@ void ScattrPanel::applyTheme (int idx)
     proc.themeIdx = idx;
     pal = Scat::themes()[(size_t) idx].pal;
     lnf.setPalette (pal);
+    buildBackdrop (idx);
     themeBtn.setButtonText (Scat::themes()[(size_t) idx].name);
     sendLookAndFeelChange();   // refreshes the knob readouts' colours
     repaint();
@@ -585,38 +670,18 @@ void ScattrPanel::drawVine (juce::Graphics& g)
     const float pi = juce::MathConstants<float>::pi;
 
     // main stem
-    const bool woody = (curTheme == 2 || curTheme == 3 || curTheme == 4);
+    const bool woody = (curTheme >= 1);   // autumn, winter, spring: bare branch
     juce::Path stem;
     stem.startNewSubPath (0.f, yAt (0.f));
     for (float x = 0.f; x <= W; x += 6.f) stem.lineTo (x, yAt (x));
-    g.setColour (curTheme == 3 ? pal.bark.brighter (0.3f) : woody ? pal.bark : pal.grassDark);
+    g.setColour (curTheme == 2 ? pal.bark.brighter (0.3f) : woody ? pal.bark : pal.grassDark);
     g.strokePath (stem, juce::PathStrokeType (woody ? 2.4f : 1.8f));
 
     int i = 0;
     switch (curTheme)
     {
         default:
-        case 0:   // twilight: leaves and little wildflowers
-            for (float x = 30.f; x < W - 20.f; x += 44.f, ++i)
-            {
-                const float sw = sway (x);
-                const bool up = (i % 2 == 0);
-                const float ang = (up ? 0.9f : pi - 0.9f) + sw;
-                const auto col = (i % 3 == 0 ? pal.grass.darker (0.2f) : pal.grassDark.brighter (0.15f)).withAlpha (0.85f);
-                drawLeaf (g, x, yAt (x), ang, 16.f + (float) (i % 3) * 3.f, col);
-
-                if (i % 3 == 1)
-                {
-                    const float fx = x + 22.f, fy = yAt (fx);
-                    const float tx = fx + sw * 30.f, ty = fy - 16.f;
-                    g.setColour (pal.grassDark);
-                    g.drawLine (fx, fy, tx, ty, 1.3f);
-                    drawFlower (g, tx, ty, 5.f, (i % 2 == 0 ? pal.acc : pal.acc.brighter (0.25f)), pal.amber);
-                }
-            }
-            break;
-
-        case 1:   // summer: broad leaves and sunflowers
+        case 0:   // summer: broad leaves and sunflowers
             for (float x = 26.f; x < W - 20.f; x += 46.f, ++i)
             {
                 const float sw = sway (x);
@@ -635,7 +700,7 @@ void ScattrPanel::drawVine (juce::Graphics& g)
             }
             break;
 
-        case 2:   // autumn: maple leaves on a bare branch, a few drifting down
+        case 1:   // autumn: maple leaves on a bare branch, a few drifting down
         {
             const juce::Colour cols[4] = { pal.acc, pal.amber, pal.accDark.brighter (0.5f), pal.grass };
             for (float x = 24.f; x < W - 16.f; x += 38.f, ++i)
@@ -655,7 +720,7 @@ void ScattrPanel::drawVine (juce::Graphics& g)
             break;
         }
 
-        case 3:   // winter: frosted twig, snow caps, icicles and drifting flakes
+        case 2:   // winter: frosted twig, snow caps, icicles and drifting flakes
             for (float x = 20.f; x < W - 16.f; x += 36.f, ++i)
             {
                 const float sy = yAt (x);
@@ -684,7 +749,7 @@ void ScattrPanel::drawVine (juce::Graphics& g)
             }
             break;
 
-        case 4:   // spring: cherry-blossom branch with falling petals
+        case 3:   // spring: cherry-blossom branch with falling petals
             for (float x = 22.f; x < W - 16.f; x += 52.f, ++i)
             {
                 const float sy = yAt (x);
@@ -714,14 +779,145 @@ void ScattrPanel::drawVine (juce::Graphics& g)
 
 // ---------------------------------------------------------------- painting
 
+// Loads this theme's picture, "cover"-fits it, bakes in the shading (dark top/bottom, vignette) and makes a
+// small blurred copy that the glass panels draw over. Done once per theme change, not per frame.
+void ScattrPanel::buildBackdrop (int idx)
+{
+    bgImg = {};
+    blurImg = {};
+
+    const auto& th = Scat::themes()[(size_t) idx];
+    int size = 0;
+    const char* data = ArtData::getNamedResource (th.image, size);
+    const juce::Image src = (data != nullptr && size > 0) ? juce::ImageFileFormat::loadFrom (data, (size_t) size) : juce::Image();
+    if (! src.isValid()) return;   // paint() falls back to the plain sky gradient
+
+    const int W = baseW * 2, H = baseH * 2;   // 2x so it stays crisp at the larger zoom levels
+    juce::Image img (juce::Image::ARGB, W, H, true);
+    {
+        juce::Graphics g (img);
+        g.fillAll (th.pal.bgMid);
+        g.setImageResamplingQuality (juce::Graphics::highResamplingQuality);
+
+        const float k = juce::jmax ((float) W / (float) src.getWidth(), (float) H / (float) src.getHeight());
+        const int dw = juce::roundToInt ((float) src.getWidth() * k) + 1, dh = juce::roundToInt ((float) src.getHeight() * k) + 1;
+        g.drawImage (src, (W - dw) / 2, (H - dh) / 2, dw, dh, 0, 0, src.getWidth(), src.getHeight());
+
+        // keep text readable: tint the sky, hold the middle lighter, sink the footer
+        juce::ColourGradient scrim (th.pal.bgTop.withAlpha (0.50f), 0.f, 0.f, th.pal.bgBot.withAlpha (0.82f), 0.f, (float) H, false);
+        scrim.addColour (0.28, th.pal.bgMid.withAlpha (0.18f));
+        scrim.addColour (0.62, th.pal.bgMid.withAlpha (0.30f));
+        g.setGradientFill (scrim);
+        g.fillAll();
+
+        // vignette
+        g.setGradientFill (juce::ColourGradient (juce::Colours::transparentBlack, (float) W * 0.5f, (float) H * 0.45f,
+                                                 juce::Colours::black.withAlpha (0.5f), 0.f, 0.f, true));
+        g.fillAll();
+    }
+
+    // frosted copy: shrink, blur, and let bilinear scaling smooth it back up
+    const juce::Image small = img.rescaled (W / 6, H / 6, juce::Graphics::highResamplingQuality);
+    juce::Image blurred = small.createCopy();
+    juce::ImageConvolutionKernel kernel (13);
+    kernel.createGaussianBlur (4.5f);
+    kernel.applyToImage (blurred, small, blurred.getBounds());
+
+    bgImg = img;
+    blurImg = blurred;
+}
+
+void ScattrPanel::paintBackdrop (juce::Graphics& g)
+{
+    if (bgImg.isValid())
+    {
+        g.drawImage (bgImg, 0, 0, baseW, baseH, 0, 0, bgImg.getWidth(), bgImg.getHeight());
+    }
+    else
+    {
+        juce::ColourGradient sky (pal.bgTop, 0.f, 0.f, pal.bgBot, 0.f, (float) baseH, false);
+        sky.addColour (0.30, pal.bgMid);
+        g.setGradientFill (sky);
+        g.fillAll();
+    }
+
+    // a soft light bloom that breathes very slowly
+    const float gx = (float) baseW * 0.82f, br = 0.10f + 0.035f * std::sin (anim * 0.6f);
+    g.setGradientFill (juce::ColourGradient (pal.amber.withAlpha (br), gx, 40.f, pal.amber.withAlpha (0.f), gx, 340.f, true));
+    g.fillRect (0, 0, baseW, 340);
+}
+
+// A frosted-glass card: accent glow and shadow behind, blurred picture + dark tint inside, bright rim on top.
+void ScattrPanel::drawGlass (juce::Graphics& g, juce::Rectangle<float> r, float radius, float tint, bool inset)
+{
+    const auto white = juce::Colours::white, black = juce::Colours::black;
+
+    for (int i = 4; i >= 1; --i)   // coloured glow
+    {
+        const float e = (float) i * 2.5f;
+        g.setColour (pal.acc.withAlpha (0.022f));
+        g.fillRoundedRectangle (r.expanded (e), radius + e);
+    }
+    for (int i = 4; i >= 1; --i)   // drop shadow
+    {
+        const float e = (float) i * 1.6f;
+        g.setColour (black.withAlpha (0.10f));
+        g.fillRoundedRectangle (r.expanded (e).translated (0.f, 3.f), radius + e);
+    }
+
+    {
+        juce::Graphics::ScopedSaveState ss (g);
+        juce::Path clip;
+        clip.addRoundedRectangle (r, radius);
+        g.reduceClipRegion (clip);
+
+        if (blurImg.isValid())
+            g.drawImage (blurImg, 0, 0, baseW, baseH, 0, 0, blurImg.getWidth(), blurImg.getHeight());
+        else
+        {
+            g.setColour (pal.bgMid);
+            g.fillRect (r);
+        }
+
+        g.setColour (pal.soil.withAlpha (tint));
+        g.fillRect (r);
+
+        if (inset)   // recessed: shadow falling from the top edge
+        {
+            g.setGradientFill (juce::ColourGradient (black.withAlpha (0.45f), 0.f, r.getY(),
+                                                     black.withAlpha (0.f), 0.f, r.getY() + 16.f, false));
+            g.fillRect (r.withHeight (16.f));
+        }
+        else         // raised: sheen on the upper half
+        {
+            g.setGradientFill (juce::ColourGradient (white.withAlpha (0.13f), 0.f, r.getY(),
+                                                     white.withAlpha (0.f), 0.f, r.getY() + r.getHeight() * 0.55f, false));
+            g.fillRect (r);
+        }
+
+        g.setGradientFill (juce::ColourGradient (black.withAlpha (0.f), 0.f, r.getBottom() - r.getHeight() * 0.4f,
+                                                 black.withAlpha (0.22f), 0.f, r.getBottom(), false));
+        g.fillRect (r);
+    }
+
+    g.setGradientFill (juce::ColourGradient (white.withAlpha (inset ? 0.10f : 0.34f), 0.f, r.getY(),
+                                             pal.acc.withAlpha (0.16f), 0.f, r.getBottom(), false));
+    g.drawRoundedRectangle (r.reduced (0.5f), radius, 1.2f);
+
+    if (! inset)   // rim light along the top edge
+    {
+        g.setColour (white.withAlpha (0.20f));
+        g.drawLine (r.getX() + radius, r.getY() + 1.6f, r.getRight() - radius, r.getY() + 1.6f, 1.f);
+    }
+}
+
 void ScattrPanel::drawGroup (juce::Graphics& g, juce::Rectangle<float> r, const juce::String& title)
 {
-    g.setColour (pal.soil.withAlpha (0.45f));
-    g.fillRoundedRectangle (r, 12.f);
-    g.setColour (pal.bark.withAlpha (0.45f));
-    g.drawRoundedRectangle (r.reduced (0.5f), 12.f, 1.f);
-    g.setColour (pal.dim);
+    drawGlass (g, r, 12.f, 0.52f);
     g.setFont (serif (13.f, true));
+    g.setColour (juce::Colours::black.withAlpha (0.5f));
+    g.drawText (title, (int) r.getX() + 15, (int) r.getY() + 5, 300, 16, juce::Justification::centredLeft);
+    g.setColour (pal.dim);
     g.drawText (title, (int) r.getX() + 14, (int) r.getY() + 4, 300, 16, juce::Justification::centredLeft);
 }
 
@@ -729,10 +925,7 @@ void ScattrPanel::paintWave (juce::Graphics& g)
 {
     // forest floor / waveform
     auto wr = waveRect();
-    g.setColour (pal.soil);
-    g.fillRoundedRectangle (wr, 10.f);
-    g.setColour (pal.bark);
-    g.drawRoundedRectangle (wr, 10.f, 1.5f);
+    drawGlass (g, wr, 10.f, 0.74f, true);
 
     if (proc.samples.empty())
     {
@@ -748,13 +941,20 @@ void ScattrPanel::paintWave (juce::Graphics& g)
         const float cy = wr.getCentreY(), hh = wr.getHeight() * 0.44f;
 
         const float al = shownPlaying ? 1.f : pinned >= 0 ? 0.75f : 0.45f;
-        g.setGradientFill (juce::ColourGradient (pal.acc.withAlpha (al), 0.f, wr.getY(),
-                                                 pal.accDark.withAlpha (al), 0.f, wr.getBottom(), false));
-        for (int i = 0; i < n; ++i)
+        for (int pass = 0; pass < 2; ++pass)   // pass 0 = soft glow, pass 1 = the waveform itself
         {
-            const float x = inner.getX() + inner.getWidth() * (float) i / (float) n;
-            g.fillRect (x, cy - pk[(size_t) i].second * hh, inner.getWidth() / (float) n + 0.5f,
-                        juce::jmax (1.5f, (pk[(size_t) i].second - pk[(size_t) i].first) * hh));
+            if (pass == 0)
+                g.setColour (pal.acc.withAlpha (al * 0.22f));
+            else
+                g.setGradientFill (juce::ColourGradient (pal.acc.withAlpha (al), 0.f, wr.getY(),
+                                                         pal.accDark.withAlpha (al), 0.f, wr.getBottom(), false));
+            const float grow = pass == 0 ? 3.f : 0.f;
+            for (int i = 0; i < n; ++i)
+            {
+                const float x = inner.getX() + inner.getWidth() * (float) i / (float) n;
+                g.fillRect (x, cy - pk[(size_t) i].second * hh - grow, inner.getWidth() / (float) n + 0.5f,
+                            juce::jmax (1.5f, (pk[(size_t) i].second - pk[(size_t) i].first) * hh) + grow * 2.f);
+            }
         }
 
         {
@@ -819,10 +1019,7 @@ void ScattrPanel::paintWave (juce::Graphics& g)
 void ScattrPanel::paintSamples (juce::Graphics& g)
 {
     const auto sp = sampleRect();
-    g.setColour (pal.soil.withAlpha (0.55f));
-    g.fillRoundedRectangle (sp, 10.f);
-    g.setColour (pal.bark.withAlpha (0.7f));
-    g.drawRoundedRectangle (sp.reduced (0.5f), 10.f, 1.2f);
+    drawGlass (g, sp, 10.f, 0.60f);
 
     g.setColour (pal.dim);
     g.setFont (serif (13.f, true));
@@ -900,26 +1097,29 @@ void ScattrPanel::paintFxTab (juce::Graphics& g)
 
 void ScattrPanel::paint (juce::Graphics& g)
 {
-    {
-        juce::ColourGradient sky (pal.bgTop, 0.f, 0.f, pal.bgBot, 0.f, (float) baseH, false);
-        sky.addColour (0.30, pal.bgMid);
-        g.setGradientFill (sky);
-        g.fillAll();
+    paintBackdrop (g);
 
-        const float gx = (float) baseW * 0.82f;
-        g.setGradientFill (juce::ColourGradient (pal.amber.withAlpha (0.12f), gx, 40.f, pal.amber.withAlpha (0.f), gx, 320.f, true));
-        g.fillRect (0, 0, baseW, 330);
-    }
-
-    // title + little sprout
-    g.setColour (pal.ink);
+    // title (glowing) + little sprout
     g.setFont (serif (38.f));
+    g.setColour (pal.acc.withAlpha (0.13f));
+    for (int dx = -2; dx <= 2; dx += 2)
+        for (int dy = -2; dy <= 2; dy += 2)
+            if (dx != 0 || dy != 0)
+                g.drawText ("S C A T T R", 18 + dx, 14 + dy, 300, 50, juce::Justification::centredLeft);
+    g.setColour (juce::Colours::black.withAlpha (0.55f));
+    g.drawText ("S C A T T R", 19, 16, 300, 50, juce::Justification::centredLeft);
+    g.setColour (pal.ink);
     g.drawText ("S C A T T R", 18, 14, 300, 50, juce::Justification::centredLeft);
     const float sw = 0.08f * std::sin (anim * 0.9f);
     drawLeaf (g, 318.f, 52.f, 0.7f + sw, 20.f, pal.grassDark.brighter (0.2f));
     drawLeaf (g, 318.f, 52.f, -0.5f + sw, 16.f, pal.grass.darker (0.3f));
     drawLeaf (g, 318.f, 52.f, 0.1f + sw, 26.f, pal.grass);
-    drawFlower (g, 318.f + std::sin (0.1f + sw) * 28.f, 52.f - 28.f, 5.5f, pal.acc, pal.amber);
+    {
+        const float fx = 318.f + std::sin (0.1f + sw) * 28.f, fy = 52.f - 28.f;
+        g.setGradientFill (juce::ColourGradient (pal.acc.withAlpha (0.55f), fx, fy, pal.acc.withAlpha (0.f), fx + 16.f, fy, true));
+        g.fillEllipse (fx - 16.f, fy - 16.f, 32.f, 32.f);
+        drawFlower (g, fx, fy, 5.5f, pal.acc, pal.amber);
+    }
 
     if (tab == 0) paintGrainsTab (g);
     else          paintFxTab (g);

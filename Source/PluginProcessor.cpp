@@ -1,9 +1,7 @@
 #include "PluginProcessor.h"
 #include "PluginEditor.h"
 
-#if SCATTR_HAS_TEXTURES
- #include "BinaryData.h"
-#endif
+#include "TexturesData.h"   // embedded wind recordings (Textures/ folder)
 
 namespace
 {
@@ -171,35 +169,14 @@ ScattrProcessor::ScattrProcessor()
     loadTextures();
 }
 
-// Textures are audio files placed in the project's Textures/ folder; CMake embeds them in the plugin.
-// With no files there, a soft built-in noise bed is used so the wind knob still does something.
+// The wind layer is built from the audio files in the project's Textures/ folder (CMake embeds them).
+// Each file becomes one looping texture; the wind knob sets its level.
 void ScattrProcessor::loadTextures()
 {
-    auto finish = [this] (Texture&& t)
-    {
-        if (t.length < 256) return;
-
-        double sum = 0.0;
-        float peak = 0.f;
-        for (int ch = 0; ch < t.data.getNumChannels(); ++ch)
-        {
-            const float* d = t.data.getReadPointer (ch);
-            for (int i = 0; i < t.length; ++i) { sum += (double) d[i] * d[i]; peak = juce::jmax (peak, std::abs (d[i])); }
-        }
-        const float rms = (float) std::sqrt (sum / (double) (t.length * t.data.getNumChannels()));
-        if (rms < 1.0e-6f || peak < 1.0e-6f) return;
-
-        // even out levels between textures (about -14 dBFS RMS, never clipping)
-        t.data.applyGain (juce::jmin (0.2f / rms, 0.95f / peak));
-        t.xfade = juce::jmin (2048, t.length / 4);
-        textures.push_back (std::move (t));
-    };
-
-   #if SCATTR_HAS_TEXTURES
-    for (int i = 0; i < BinaryData::namedResourceListSize; ++i)
+    for (int i = 0; i < TexturesData::namedResourceListSize; ++i)
     {
         int size = 0;
-        const char* data = BinaryData::getNamedResource (BinaryData::namedResourceList[i], size);
+        const char* data = TexturesData::getNamedResource (TexturesData::namedResourceList[i], size);
         if (data == nullptr || size <= 0) continue;
 
         std::unique_ptr<juce::AudioFormatReader> r (formats.createReaderFor (
@@ -213,32 +190,24 @@ void ScattrProcessor::loadTextures()
         t.data.setSize (juce::jmin (2, (int) r->numChannels), n);
         t.data.clear();
         r->read (&t.data, 0, n, 0, true, true);
-        finish (std::move (t));
-    }
-   #else
-    {
-        Texture t;
-        t.sampleRate = 44100.0;
-        t.length = 44100 * 6;
-        t.data.setSize (2, t.length);
-        for (int ch = 0; ch < 2; ++ch)
+
+        double sum = 0.0;
+        float peak = 0.f;
+        for (int ch = 0; ch < t.data.getNumChannels(); ++ch)
         {
-            juce::Random rnd (4321 + ch * 77);
-            float* d = t.data.getWritePointer (ch);
-            float b0 = 0.f, b1 = 0.f, b2 = 0.f;
-            for (int i = 0; i < t.length; ++i)
-            {
-                const float w = rnd.nextFloat() * 2.f - 1.f;
-                b0 = 0.99765f * b0 + w * 0.0990460f;
-                b1 = 0.96300f * b1 + w * 0.2965164f;
-                b2 = 0.57000f * b2 + w * 1.0526913f;
-                const float gust = 0.65f + 0.35f * std::sin (juce::MathConstants<float>::twoPi * 2.f * (float) i / (float) t.length);
-                d[i] = (b0 + b1 + b2 + w * 0.1848f) * gust;
-            }
+            const float* d = t.data.getReadPointer (ch);
+            for (int k = 0; k < t.length; ++k) { sum += (double) d[k] * d[k]; peak = juce::jmax (peak, std::abs (d[k])); }
         }
-        finish (std::move (t));
+        const float rms = (float) std::sqrt (sum / (double) ((juce::int64) t.length * t.data.getNumChannels()));
+        if (rms < 1.0e-6f || peak < 1.0e-6f) continue;
+
+        // even out levels between textures (about -14 dBFS RMS, never clipping)
+        t.data.applyGain (juce::jmin (0.2f / rms, 0.95f / peak));
+
+        // wind is slow-moving, so hide the loop seam with a long (1.5 s) equal-power crossfade
+        t.xfade = juce::jmin ((int) (1.5 * t.sampleRate), t.length / 4);
+        textures.push_back (std::move (t));
     }
-   #endif
 }
 
 void ScattrProcessor::prepareToPlay (double sampleRate, int samplesPerBlock)
@@ -738,6 +707,7 @@ void ScattrProcessor::getStateInformation (juce::MemoryBlock& dest)
     auto st = apvts.copyState();
     st.setProperty ("uiScale", editorScale.load(), nullptr);
     st.setProperty ("theme", themeIdx.load(), nullptr);
+    st.setProperty ("themeV", 2, nullptr);   // 2 = twilight removed (summer is index 0)
     juce::ValueTree sl ("SAMPLES");
     for (auto& s : samples)
     {
@@ -761,7 +731,9 @@ void ScattrProcessor::setStateInformation (const void* data, int size)
         if (! st.hasType (apvts.state.getType())) return;
 
         editorScale = juce::jlimit (0.5f, 2.0f, (float) st.getProperty ("uiScale", 1.0f));
-        themeIdx = juce::jmax (0, (int) st.getProperty ("theme", 0));
+        int th = juce::jmax (0, (int) st.getProperty ("theme", 0));
+        if ((int) st.getProperty ("themeV", 1) < 2) th = juce::jmax (0, th - 1);   // older saves counted twilight as 0
+        themeIdx = th;
 
         auto sl = st.getChildWithName ("SAMPLES");
         st.removeChild (sl, nullptr);
