@@ -25,6 +25,28 @@ juce_add_plugin(Scattr
     VST3_CATEGORIES Instrument Synth
     PRODUCT_NAME "SCATTR")
 
+# --- embedded assets -------------------------------------------------------------------------
+# Textures/*.wav  -> looping layers for the WIND knob  (TexturesData::...)
+# Backgrounds/*.png -> one backdrop picture per theme  (ArtData::...)
+# Re-run CMake after adding or replacing a file in either folder.
+file(GLOB SCATTR_TEXTURES CONFIGURE_DEPENDS
+     "${CMAKE_CURRENT_SOURCE_DIR}/Textures/*.wav"
+     "${CMAKE_CURRENT_SOURCE_DIR}/Textures/*.aif"
+     "${CMAKE_CURRENT_SOURCE_DIR}/Textures/*.flac")
+file(GLOB SCATTR_BACKGROUNDS CONFIGURE_DEPENDS
+     "${CMAKE_CURRENT_SOURCE_DIR}/Backgrounds/*.png"
+     "${CMAKE_CURRENT_SOURCE_DIR}/Backgrounds/*.jpg")
+
+juce_add_binary_data(ScattrTextures
+    HEADER_NAME "TexturesData.h"
+    NAMESPACE TexturesData
+    SOURCES ${SCATTR_TEXTURES})
+
+juce_add_binary_data(ScattrArt
+    HEADER_NAME "ArtData.h"
+    NAMESPACE ArtData
+    SOURCES ${SCATTR_BACKGROUNDS})
+
 target_sources(Scattr PRIVATE
     Source/PluginProcessor.cpp
     Source/PluginEditor.cpp)
@@ -36,6 +58,8 @@ target_compile_definitions(Scattr PUBLIC
 
 target_link_libraries(Scattr
     PRIVATE
+        ScattrTextures
+        ScattrArt
         juce::juce_audio_utils
         juce::juce_dsp
     PUBLIC
