@@ -31,26 +31,44 @@ void drawFlower (juce::Graphics& g, float x, float y, float r, juce::Colour peta
 
 const char* const kNoteNames[11] = { "1/32", "1/16T", "1/16", "1/8T", "1/8", "1/8.", "1/4T", "1/4", "1/4.", "1/2", "1/1" };
 
+// A five-lobed maple leaf with veins and a stem. `r` is the leaf's half-height; the stem points down
+// before rotation. (The old version was a plain five-point star.)
 void drawMaple (juce::Graphics& g, float x, float y, float rot, float r, juce::Colour c)
 {
+    // right half of the outline (y up, tip at the top); the left half is mirrored
+    static const float half[][2] = {
+        { 0.00f,  1.00f }, { 0.11f,  0.80f }, { 0.21f,  0.84f }, { 0.19f,  0.60f }, { 0.30f,  0.64f }, { 0.27f,  0.44f },
+        { 0.52f,  0.58f }, { 0.58f,  0.80f }, { 0.70f,  0.66f }, { 0.92f,  0.70f }, { 0.78f,  0.42f }, { 0.86f,  0.30f },
+        { 0.66f,  0.20f }, { 0.98f, -0.02f }, { 0.62f, -0.10f }, { 0.50f, -0.30f }, { 0.14f, -0.22f }, { 0.00f, -0.34f }
+    };
+    constexpr int n = (int) (sizeof (half) / sizeof (half[0]));
+
     juce::Path p;
-    for (int i = 0; i < 10; ++i)
-    {
-        const float a = (float) i * juce::MathConstants<float>::pi / 5.f;
-        const float rr = (i % 2 == 0) ? r : r * 0.45f;
-        const float px = std::sin (a) * rr, py = -std::cos (a) * rr;
-        if (i == 0) p.startNewSubPath (px, py); else p.lineTo (px, py);
-    }
+    p.startNewSubPath (0.f, -r);
+    for (int i = 1; i < n; ++i)       p.lineTo (half[i][0] * r, -half[i][1] * r);
+    for (int i = n - 2; i >= 1; --i)  p.lineTo (-half[i][0] * r, -half[i][1] * r);
     p.closeSubPath();
+
     const auto t = juce::AffineTransform::rotation (rot).translated (x, y);
     g.setColour (c);
-    g.fillPath (p.createPathWithRoundedCorners (1.5f), t);
+    g.fillPath (p.createPathWithRoundedCorners (juce::jmax (0.4f, r * 0.07f)), t);
 
-    juce::Path stem;
-    stem.startNewSubPath (0.f, 0.f);
-    stem.lineTo (0.f, r * 0.95f);
-    g.setColour (c.darker (0.5f));
-    g.strokePath (stem, juce::PathStrokeType (1.f), t);
+    const auto vein = c.darker (0.55f);
+    juce::Path v;
+    if (r >= 7.f)   // veins only when the leaf is big enough to show them
+    {
+        const float tips[3][2] = { { 0.f, 0.85f }, { 0.64f, 0.44f }, { 0.64f, -0.02f } };
+        for (auto& tp : tips)
+        {
+            v.startNewSubPath (0.f, r * 0.28f);
+            v.lineTo (tp[0] * r, -tp[1] * r);
+            if (tp[0] > 0.f) { v.startNewSubPath (0.f, r * 0.28f); v.lineTo (-tp[0] * r, -tp[1] * r); }
+        }
+    }
+    v.startNewSubPath (0.f, r * 0.34f);   // stem
+    v.lineTo (0.f, r * 0.95f);
+    g.setColour (vein);
+    g.strokePath (v, juce::PathStrokeType (r >= 7.f ? 0.9f : 1.1f), t);
 }
 
 void drawSunflower (juce::Graphics& g, float x, float y, float r, juce::Colour petal, juce::Colour centre)
@@ -760,7 +778,7 @@ void ScattrPanel::drawVine (juce::Graphics& g)
             {
                 const float t = std::fmod (anim * 0.05f + (float) k * 0.25f, 1.f);
                 const float fx = W * (0.14f + 0.24f * (float) k) + 24.f * std::sin (anim * 0.7f + (float) k * 2.f);
-                drawMaple (g, fx, top + t * (y0 - top - 4.f), anim * 1.2f + (float) k, 5.5f, cols[k % 4].withAlpha (0.85f * (1.f - t * 0.6f)));
+                drawMaple (g, fx, top + t * (y0 - top - 4.f), anim * 1.2f + (float) k, 6.5f, cols[k % 4].withAlpha (0.85f * (1.f - t * 0.6f)));
             }
             break;
         }
@@ -853,6 +871,12 @@ void ScattrPanel::paintIdleDrift (juce::Graphics& g, juce::Rectangle<float> area
     clip.addRoundedRectangle (area.reduced (1.f), 9.f);
     g.reduceClipRegion (clip);
 
+    // breathing light: a soft accent glow that swells and fades with the same slow rhythm as the waveform
+    const float breath = 0.5f + 0.5f * std::sin (anim * 1.1f);
+    g.setGradientFill (juce::ColourGradient (pal.acc.withAlpha ((0.04f + 0.11f * breath) * idleFade), area.getCentreX(), area.getCentreY(),
+                                             pal.acc.withAlpha (0.f), area.getX(), area.getCentreY(), true));
+    g.fillRect (area);
+
     const float pi = juce::MathConstants<float>::pi;
     const juce::Colour mapleCols[4] = { pal.acc, pal.amber, pal.accDark.brighter (0.5f), pal.grass };
 
@@ -885,7 +909,7 @@ void ScattrPanel::paintIdleDrift (juce::Graphics& g, juce::Rectangle<float> area
                 break;
 
             case 1:   // autumn
-                drawMaple (g, x, y, rot, 6.f + 3.f * depth, mapleCols[k % 4].withAlpha (a));
+                drawMaple (g, x, y, rot, 8.f + 4.f * depth, mapleCols[k % 4].withAlpha (a));
                 break;
 
             case 2:   // winter
@@ -1003,9 +1027,11 @@ void ScattrPanel::paintWave (juce::Graphics& g)
             const float grow = pass == 0 ? 3.f : 0.f;
             for (int i = 0; i < n; ++i)
             {
+                // idle "breathing": the whole shape swells and relaxes, with a slow ripple travelling along it
+                const float mod = 1.f + idleFade * (0.045f * std::sin (anim * 1.1f) + 0.03f * std::sin (anim * 1.1f - (float) i * 0.035f));
                 const float x = inner.getX() + inner.getWidth() * (float) i / (float) n;
-                g.fillRect (x, cy - pk[(size_t) i].second * hh - grow, inner.getWidth() / (float) n + 0.5f,
-                            juce::jmax (1.5f, (pk[(size_t) i].second - pk[(size_t) i].first) * hh) + grow * 2.f);
+                g.fillRect (x, cy - pk[(size_t) i].second * hh * mod - grow, inner.getWidth() / (float) n + 0.5f,
+                            juce::jmax (1.5f, (pk[(size_t) i].second - pk[(size_t) i].first) * hh * mod) + grow * 2.f);
             }
         }
 
@@ -1058,7 +1084,7 @@ void ScattrPanel::paintWave (juce::Graphics& g)
 
     // status line under the waveform
     g.setFont (serif (14.f, true));
-    g.setColour (pal.dim);
+    g.setColour (pal.dim.withAlpha (1.f - 0.3f * idleFade * (0.5f + 0.5f * std::sin (anim * 1.1f))));
     const int count = (int) proc.samples.size();
     juce::String st = count == 0 ? "the grove is empty"
                     : pinned >= 0 && pinned < count
