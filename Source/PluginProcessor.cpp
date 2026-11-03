@@ -25,7 +25,7 @@ juce::AudioProcessorValueTreeState::ParameterLayout makeLayout()
     add ("gap",   "Gap",          0.f, 5.f,   0.3f,  1.f);
     add ("cycle", "Key Cycle",    0.05f, 20.f, 1.5f, 0.5f);   // seconds per sample while a key is held
     add ("rand",  "Randomizer",   0.f, 1.f,   0.f,   1.f);     // chance that a grain comes from a random sample
-    add ("width", "Width",        0.f, 1.f,   0.5f,  1.f);
+    add ("width", "Random Pan",   0.f, 1.f,   0.5f,  1.f);   // per-grain random pan amount (id kept as "width" for old projects)
     add ("amp",   "Amp",          0.f, 1.f,   0.7f,  1.f);
     add ("mtune", "Master Tune", -100.f, 100.f, 0.f, 1.f);   // cents
 
@@ -276,6 +276,17 @@ bool ScattrProcessor::addSampleFile (const juce::File& f)
     s->data.clear();
     r->read (&s->data, 0, n, 0, true, true);
 
+    // Quiet files are normalised on load: if the loudest peak is below -6 dBFS the whole sample is raised
+    // so its peak sits near -1 dBFS (gain capped at +30 dB so near-silent files don't become a wall of hiss).
+    // Louder files are left exactly as they are.
+    {
+        float peak = 0.f;
+        for (int ch = 0; ch < s->data.getNumChannels(); ++ch)
+            peak = juce::jmax (peak, s->data.getMagnitude (ch, 0, n));
+        if (peak > 1.0e-4f && peak < 0.5f)
+            s->data.applyGain (juce::jmin (0.9f / peak, 31.6f));
+    }
+
     const int cols = 700;
     const int step = juce::jmax (1, n / cols);
     const float* d = s->data.getReadPointer (0);
@@ -304,6 +315,14 @@ void ScattrProcessor::clearSamples()
     const juce::ScopedLock sl (lock);
     samples.clear();
     ++generation;
+}
+
+void ScattrProcessor::removeSample (int index)
+{
+    const juce::ScopedLock sl (lock);
+    if (index < 0 || index >= (int) samples.size()) return;
+    samples.erase (samples.begin() + index);
+    ++generation;   // the audio thread drops its grains and rebuilds its play order on the next block
 }
 
 int ScattrProcessor::pickSample()
@@ -455,7 +474,8 @@ void ScattrProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::Midi
         double start = regS + (prog + (rng.nextFloat() - 0.5f) * spray) * regLen;
         start = juce::jlimit (regS, juce::jmax (regS, regE - (double) len * inc - 3.0), start);
 
-        const float pan = 0.5f + (rng.nextFloat() - 0.5f) * width;
+        // full knob = grains land anywhere from 10% to 90% across the field (never hard left/right), so it stays gentle
+        const float pan = 0.5f + (rng.nextFloat() - 0.5f) * width * 0.8f;
         slot->active = true;
         slot->s = &s;
         slot->pos = start;

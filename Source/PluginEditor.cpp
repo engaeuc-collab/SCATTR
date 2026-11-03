@@ -1,5 +1,4 @@
 #include "PluginEditor.h"
-#include "ArtData.h"   // embedded theme backdrops (Backgrounds/ folder)
 
 using namespace Scat;
 
@@ -278,7 +277,7 @@ ScattrPanel::ScattrPanel (ScattrProcessor& p) : proc (p)
 
     struct Def { const char* id; const char* text; int dp; };
     // dp = digits shown under the knob (whole numbers for big ranges, 0.00 style for the small ones)
-    static const Def defs[21] = {
+    static const Def defs[22] = {
         { "size", "seed size", 0 }, { "dens", "rain", 0 }, { "pitch", "pitch", 2 },
         { "wind", "wind", 2 }, { "spray", "scatter", 2 }, { "hold", "bloom", 2 },
         { "gap", "rest", 2 }, { "amp", "sun", 2 },
@@ -286,7 +285,7 @@ ScattrPanel::ScattrPanel (ScattrProcessor& p) : proc (p)
         { "dnote", "time", -1 }, { "dfb", "feedback", 2 }, { "dmix", "echo mix", 2 },
         { "rsize", "size", 2 }, { "rdamp", "damp", 2 }, { "rmix", "reverb mix", 2 },
         { "mtune", "master tune", 0 }, { "cycle", "cycle", 2 }, { "rand", "random", 2 },
-        { "fmix", "filter mix", 2 }
+        { "fmix", "filter mix", 2 }, { "width", "pan spread", 2 }
     };
 
     for (size_t i = 0; i < knobs.size(); ++i)
@@ -440,7 +439,6 @@ void ScattrPanel::applyTheme (int idx)
     proc.themeIdx = idx;
     pal = Scat::themes()[(size_t) idx].pal;
     lnf.setPalette (pal);
-    buildBackdrop (idx);
     themeBtn.setButtonText (Scat::themes()[(size_t) idx].name);
     sendLookAndFeelChange();   // refreshes the knob readouts' colours
     repaint();
@@ -490,13 +488,13 @@ void ScattrPanel::resized()
 
     // grains tab: two roomy rows
     {
-        static const size_t row1[6] = { 0, 1, 2, 3, 4, 17 };      // seed size, rain, pitch, wind, scatter, master tune
+        static const size_t row1[7] = { 0, 1, 2, 3, 4, 21, 17 };  // seed size, rain, pitch, wind, scatter, pan spread, master tune
         static const size_t row2[5] = { 5, 6, 18, 19, 7 };        // bloom, rest, cycle, random, sun
-        for (int k = 0; k < 6; ++k) place (row1[k], grainPanel(), 6, k, 88);
-        for (int k = 0; k < 5; ++k) place (row2[k], motionPanel(), 6, k, 88);
+        for (int k = 0; k < 7; ++k) place (row1[k], grainPanel(), 7, k, 88);
+        for (int k = 0; k < 5; ++k) place (row2[k], motionPanel(), 7, k, 88);
 
         const auto mp = motionPanel();
-        const int sw = (int) ((mp.getWidth() - 24.f) / 6.f);
+        const int sw = (int) ((mp.getWidth() - 24.f) / 7.f);
         const int bx = (int) mp.getX() + 12 + 5 * sw + (sw - 80) / 2;
         droneBtn.setBounds (bx, (int) mp.getY() + 40, 80, 28);
         tuneBtn.setBounds  (bx, (int) mp.getY() + 78, 80, 28);
@@ -539,9 +537,55 @@ int ScattrPanel::hitHandle (float x) const
     return ds < de ? 1 : 2;
 }
 
+void ScattrPanel::showSampleMenu (int idx)
+{
+    const auto target = proc.samples[(size_t) idx];   // keep the sample's identity: the list can change while the menu is open
+
+    juce::PopupMenu menu;
+    menu.addItem (1, target->enabled.load() ? "Mute" : "Unmute");
+    menu.addItem (2, "Remove");
+
+    juce::Component::SafePointer<ScattrPanel> safe (this);
+    menu.showMenuAsync (juce::PopupMenu::Options(), [safe, target] (int result)
+    {
+        if (safe == nullptr || result <= 0) return;
+        auto& p = *safe;
+
+        int i = -1;
+        for (size_t k = 0; k < p.proc.samples.size(); ++k)
+            if (p.proc.samples[k] == target) { i = (int) k; break; }
+        if (i < 0) return;
+
+        if (result == 1)
+            target->enabled = ! target->enabled.load();
+        else
+        {
+            p.proc.removeSample (i);
+            if (p.pinned == i)     p.pinned = -1;
+            else if (p.pinned > i) --p.pinned;
+            p.shown = -1;
+            p.listOff = juce::jlimit (0, juce::jmax (0, (int) p.proc.samples.size() - maxRows), p.listOff);
+        }
+        p.repaint();
+    });
+}
+
 void ScattrPanel::mouseDown (const juce::MouseEvent& e)
 {
     if (tab != 0) return;
+
+    if (e.mods.isPopupMenu())   // right-click: only does something on a sample row
+    {
+        const auto lp = sampleRect();
+        if (lp.contains (e.position) && e.position.y >= lp.getY() + (float) listTop)
+        {
+            const int row = (int) ((e.position.y - (lp.getY() + (float) listTop)) / (float) rowH);
+            const int idx = listOff + row;
+            if (row < maxRows && idx >= 0 && idx < (int) proc.samples.size())
+                showSampleMenu (idx);
+        }
+        return;
+    }
 
     if (waveRect().contains (e.position))
     {
@@ -645,6 +689,7 @@ void ScattrPanel::timerCallback()
 
     playing  = proc.uiPlaying.load();
     shownPlaying = playing && playIdx == shown;
+    idleFade += ((shownPlaying ? 0.f : 1.f) - idleFade) * 0.12f;
     progress = proc.uiProgress.load();
 
     const float gp = proc.uiGrain.load();
@@ -779,75 +824,87 @@ void ScattrPanel::drawVine (juce::Graphics& g)
 
 // ---------------------------------------------------------------- painting
 
-// Loads this theme's picture, "cover"-fits it, bakes in the shading (dark top/bottom, vignette) and makes a
-// small blurred copy that the glass panels draw over. Done once per theme change, not per frame.
-void ScattrPanel::buildBackdrop (int idx)
+void ScattrPanel::fillSky (juce::Graphics& g)
 {
-    bgImg = {};
-    blurImg = {};
-
-    const auto& th = Scat::themes()[(size_t) idx];
-    int size = 0;
-    const char* data = ArtData::getNamedResource (th.image, size);
-    const juce::Image src = (data != nullptr && size > 0) ? juce::ImageFileFormat::loadFrom (data, (size_t) size) : juce::Image();
-    if (! src.isValid()) return;   // paint() falls back to the plain sky gradient
-
-    const int W = baseW * 2, H = baseH * 2;   // 2x so it stays crisp at the larger zoom levels
-    juce::Image img (juce::Image::ARGB, W, H, true);
-    {
-        juce::Graphics g (img);
-        g.fillAll (th.pal.bgMid);
-        g.setImageResamplingQuality (juce::Graphics::highResamplingQuality);
-
-        const float k = juce::jmax ((float) W / (float) src.getWidth(), (float) H / (float) src.getHeight());
-        const int dw = juce::roundToInt ((float) src.getWidth() * k) + 1, dh = juce::roundToInt ((float) src.getHeight() * k) + 1;
-        g.drawImage (src, (W - dw) / 2, (H - dh) / 2, dw, dh, 0, 0, src.getWidth(), src.getHeight());
-
-        // keep text readable: tint the sky, hold the middle lighter, sink the footer
-        juce::ColourGradient scrim (th.pal.bgTop.withAlpha (0.50f), 0.f, 0.f, th.pal.bgBot.withAlpha (0.82f), 0.f, (float) H, false);
-        scrim.addColour (0.28, th.pal.bgMid.withAlpha (0.18f));
-        scrim.addColour (0.62, th.pal.bgMid.withAlpha (0.30f));
-        g.setGradientFill (scrim);
-        g.fillAll();
-
-        // vignette
-        g.setGradientFill (juce::ColourGradient (juce::Colours::transparentBlack, (float) W * 0.5f, (float) H * 0.45f,
-                                                 juce::Colours::black.withAlpha (0.5f), 0.f, 0.f, true));
-        g.fillAll();
-    }
-
-    // frosted copy: shrink, blur, and let bilinear scaling smooth it back up
-    const juce::Image small = img.rescaled (W / 6, H / 6, juce::Graphics::highResamplingQuality);
-    juce::Image blurred = small.createCopy();
-    juce::ImageConvolutionKernel kernel (13);
-    kernel.createGaussianBlur (4.5f);
-    kernel.applyToImage (blurred, small, blurred.getBounds());
-
-    bgImg = img;
-    blurImg = blurred;
+    juce::ColourGradient sky (pal.bgTop, 0.f, 0.f, pal.bgBot, 0.f, (float) baseH, false);
+    sky.addColour (0.30, pal.bgMid);
+    g.setGradientFill (sky);
+    g.fillRect (0, 0, baseW, baseH);
 }
 
 void ScattrPanel::paintBackdrop (juce::Graphics& g)
 {
-    if (bgImg.isValid())
-    {
-        g.drawImage (bgImg, 0, 0, baseW, baseH, 0, 0, bgImg.getWidth(), bgImg.getHeight());
-    }
-    else
-    {
-        juce::ColourGradient sky (pal.bgTop, 0.f, 0.f, pal.bgBot, 0.f, (float) baseH, false);
-        sky.addColour (0.30, pal.bgMid);
-        g.setGradientFill (sky);
-        g.fillAll();
-    }
+    fillSky (g);
 
     // a soft light bloom that breathes very slowly
-    const float gx = (float) baseW * 0.82f, br = 0.10f + 0.035f * std::sin (anim * 0.6f);
+    const float gx = (float) baseW * 0.82f, br = 0.12f + 0.035f * std::sin (anim * 0.6f);
     g.setGradientFill (juce::ColourGradient (pal.amber.withAlpha (br), gx, 40.f, pal.amber.withAlpha (0.f), gx, 340.f, true));
     g.fillRect (0, 0, baseW, 340);
 }
 
-// A frosted-glass card: accent glow and shadow behind, blurred picture + dark tint inside, bright rim on top.
+// Slow themed floaters inside the waveform window while nothing is playing: leaves and fireflies (summer),
+// maple leaves (autumn), snowflakes (winter), blossom petals (spring). Purely a function of `anim`, no state.
+void ScattrPanel::paintIdleDrift (juce::Graphics& g, juce::Rectangle<float> area)
+{
+    if (idleFade < 0.01f) return;
+
+    juce::Graphics::ScopedSaveState ss (g);
+    juce::Path clip;
+    clip.addRoundedRectangle (area.reduced (1.f), 9.f);
+    g.reduceClipRegion (clip);
+
+    const float pi = juce::MathConstants<float>::pi;
+    const juce::Colour mapleCols[4] = { pal.acc, pal.amber, pal.accDark.brighter (0.5f), pal.grass };
+
+    for (int k = 0; k < 16; ++k)
+    {
+        const float depth = 0.6f + 0.2f * (float) (k % 3);                 // 0.6 .. 1.0: far ones are slower and smaller
+        const float t = std::fmod (anim * 0.035f * depth + (float) k * 0.6180339f, 1.f);
+        const float baseX = std::fmod ((float) k * 0.7548777f, 1.f);
+        const float x = area.getX() + area.getWidth() * baseX + 18.f * std::sin (anim * 0.7f * depth + (float) k * 1.9f);
+        const float y = area.getY() - 8.f + t * (area.getHeight() + 16.f);
+        const float a = idleFade * std::sin (t * pi) * 0.85f;              // fades in at the top, out at the bottom
+        const float rot = anim * (0.5f + 0.3f * depth) * ((k % 2) != 0 ? 1.f : -1.f) + (float) k;
+
+        switch (curTheme)
+        {
+            default:
+            case 0:   // summer
+                if (k % 4 == 0)   // firefly
+                {
+                    const float fy = area.getY() + area.getHeight() * (0.2f + 0.6f * baseX) + 8.f * std::sin (anim * 0.9f + (float) k);
+                    const float pulse = 0.5f + 0.5f * std::sin (anim * 1.6f + (float) k * 2.1f);
+                    g.setGradientFill (juce::ColourGradient (pal.amber.withAlpha (0.6f * idleFade * pulse), x, fy,
+                                                             pal.amber.withAlpha (0.f), x + 8.f, fy, true));
+                    g.fillEllipse (x - 8.f, fy - 8.f, 16.f, 16.f);
+                    g.setColour (juce::Colours::white.withAlpha (0.8f * idleFade * pulse));
+                    g.fillEllipse (x - 1.2f, fy - 1.2f, 2.4f, 2.4f);
+                }
+                else
+                    drawLeaf (g, x, y, rot, 9.f + 5.f * depth, (k % 2 == 0 ? pal.grass : pal.grassDark.brighter (0.25f)).withAlpha (a));
+                break;
+
+            case 1:   // autumn
+                drawMaple (g, x, y, rot, 6.f + 3.f * depth, mapleCols[k % 4].withAlpha (a));
+                break;
+
+            case 2:   // winter
+                drawSnowflake (g, x, y, 3.f + 3.f * depth, pal.ink, a);
+                break;
+
+            case 3:   // spring
+            {
+                juce::Path p;
+                p.addEllipse (-3.5f * depth, -2.4f * depth, 7.f * depth, 4.8f * depth);
+                g.setColour (pal.acc.brighter (0.5f).withAlpha (a));
+                g.fillPath (p, juce::AffineTransform::rotation (rot).translated (x, y));
+                break;
+            }
+        }
+    }
+}
+
+// A glass card: accent glow and shadow behind, the sky seen through a dark tint, bright rim on top.
 void ScattrPanel::drawGlass (juce::Graphics& g, juce::Rectangle<float> r, float radius, float tint, bool inset)
 {
     const auto white = juce::Colours::white, black = juce::Colours::black;
@@ -871,13 +928,7 @@ void ScattrPanel::drawGlass (juce::Graphics& g, juce::Rectangle<float> r, float 
         clip.addRoundedRectangle (r, radius);
         g.reduceClipRegion (clip);
 
-        if (blurImg.isValid())
-            g.drawImage (blurImg, 0, 0, baseW, baseH, 0, 0, blurImg.getWidth(), blurImg.getHeight());
-        else
-        {
-            g.setColour (pal.bgMid);
-            g.fillRect (r);
-        }
+        fillSky (g);
 
         g.setColour (pal.soil.withAlpha (tint));
         g.fillRect (r);
@@ -926,6 +977,7 @@ void ScattrPanel::paintWave (juce::Graphics& g)
     // forest floor / waveform
     auto wr = waveRect();
     drawGlass (g, wr, 10.f, 0.74f, true);
+    paintIdleDrift (g, wr);   // fades out while a sample plays
 
     if (proc.samples.empty())
     {

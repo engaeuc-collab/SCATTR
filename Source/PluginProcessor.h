@@ -62,6 +62,7 @@ public:
     // Message-thread only
     bool addSampleFile (const juce::File& f);
     void clearSamples();
+    void removeSample (int index);
 
     juce::AudioProcessorValueTreeState apvts;
 
