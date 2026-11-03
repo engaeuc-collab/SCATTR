@@ -69,6 +69,9 @@ public:
     // Editor zoom (1.0 = 100%), saved with the plugin state
     std::atomic<float> editorScale { 1.f };
 
+    // Colour theme index, saved with the plugin state
+    std::atomic<int> themeIdx { 0 };
+
 private:
     struct Grain
     {

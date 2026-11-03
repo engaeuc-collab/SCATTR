@@ -22,6 +22,7 @@ juce::AudioProcessorValueTreeState::ParameterLayout makeLayout()
     add ("hold",  "Hold",         0.5f, 20.f, 4.f,   0.5f);
     add ("gap",   "Gap",          0.f, 5.f,   0.3f,  1.f);
     add ("cycle", "Key Cycle",    0.05f, 20.f, 1.5f, 0.5f);   // seconds per sample while a key is held
+    add ("rand",  "Randomizer",   0.f, 1.f,   0.f,   1.f);     // chance that a grain comes from a random sample
     add ("width", "Width",        0.f, 1.f,   0.5f,  1.f);
     add ("amp",   "Amp",          0.f, 1.f,   0.7f,  1.f);
     add ("mtune", "Master Tune", -100.f, 100.f, 0.f, 1.f);   // cents
@@ -278,7 +279,7 @@ void ScattrProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::Midi
 
     auto prm = [this] (const char* id) { return apvts.getRawParameterValue (id)->load(); };
     const float sizeMs = prm ("size"), dens = prm ("dens"), pitch = prm ("pitch"), pjit = prm ("pjit"),
-                spray = prm ("spray"), holdS = prm ("hold"), gapS = prm ("gap"), cycleS = prm ("cycle"), width = prm ("width"),
+                spray = prm ("spray"), holdS = prm ("hold"), gapS = prm ("gap"), cycleS = prm ("cycle"), randAmt = prm ("rand"), width = prm ("width"),
                 amp = prm ("amp");
     const bool active = prm ("drone") > 0.5f || notesHeld > 0;
 
@@ -319,7 +320,19 @@ void ScattrProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::Midi
         for (auto& g : grains) if (! g.active) { slot = &g; break; }
         if (slot == nullptr) return;
 
-        const Sample& s = *samples[(size_t) cur];
+        // randomizer: with probability `randAmt`, this grain is taken from a random enabled sample
+        // instead of the current one (0 = never, 1 = every grain)
+        int idx = cur;
+        if (randAmt > 0.f && samples.size() > 1 && rng.nextFloat() < randAmt)
+        {
+            for (int t = 0; t < 8; ++t)
+            {
+                const int c = rng.nextInt ((int) samples.size());
+                if (samples[(size_t) c]->enabled.load()) { idx = c; break; }
+            }
+        }
+
+        const Sample& s = *samples[(size_t) idx];
         const double srcLen = (double) s.length;
         const double regS = (double) s.startN.load() * srcLen;
         const double regE = (double) s.endN.load() * srcLen;
@@ -344,7 +357,7 @@ void ScattrProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::Midi
         slot->len = len;
         slot->gl = std::cos (pan * juce::MathConstants<float>::halfPi) * 1.4142f;
         slot->gr = std::sin (pan * juce::MathConstants<float>::halfPi) * 1.4142f;
-        uiGrain.store ((float) (start / srcLen));
+        if (idx == cur) uiGrain.store ((float) (start / srcLen));
     };
 
     // a key was just pressed: jump to a new random sample immediately (no waiting out the rest/bloom)
@@ -491,6 +504,7 @@ void ScattrProcessor::getStateInformation (juce::MemoryBlock& dest)
 {
     auto st = apvts.copyState();
     st.setProperty ("uiScale", editorScale.load(), nullptr);
+    st.setProperty ("theme", themeIdx.load(), nullptr);
     juce::ValueTree sl ("SAMPLES");
     for (auto& s : samples)
     {
@@ -514,6 +528,7 @@ void ScattrProcessor::setStateInformation (const void* data, int size)
         if (! st.hasType (apvts.state.getType())) return;
 
         editorScale = juce::jlimit (0.5f, 2.0f, (float) st.getProperty ("uiScale", 1.0f));
+        themeIdx = juce::jmax (0, (int) st.getProperty ("theme", 0));
 
         auto sl = st.getChildWithName ("SAMPLES");
         st.removeChild (sl, nullptr);

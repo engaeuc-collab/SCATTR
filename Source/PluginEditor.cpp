@@ -17,7 +17,7 @@ void drawLeaf (juce::Graphics& g, float x, float y, float angle, float size, juc
     g.strokePath (rib, juce::PathStrokeType (1.f), t);
 }
 
-void drawFlower (juce::Graphics& g, float x, float y, float r, juce::Colour petal)
+void drawFlower (juce::Graphics& g, float x, float y, float r, juce::Colour petal, juce::Colour centre)
 {
     g.setColour (petal);
     for (int k = 0; k < 5; ++k)
@@ -25,7 +25,7 @@ void drawFlower (juce::Graphics& g, float x, float y, float r, juce::Colour peta
         const float a = (float) k * juce::MathConstants<float>::twoPi / 5.f;
         g.fillEllipse (x + std::sin (a) * r * 0.6f - r * 0.4f, y - std::cos (a) * r * 0.6f - r * 0.4f, r * 0.8f, r * 0.8f);
     }
-    g.setColour (amber);
+    g.setColour (centre);
     g.fillEllipse (x - r * 0.25f, y - r * 0.25f, r * 0.5f, r * 0.5f);
 }
 }
@@ -34,11 +34,17 @@ void drawFlower (juce::Graphics& g, float x, float y, float r, juce::Colour peta
 
 ScattrLNF::ScattrLNF()
 {
-    setColour (juce::TextButton::textColourOffId, ink);
-    setColour (juce::Slider::textBoxTextColourId, ink);
+    setPalette (Scat::themes()[0].pal);
+}
+
+void ScattrLNF::setPalette (const Scat::Palette& p)
+{
+    pal = p;
+    setColour (juce::TextButton::textColourOffId, pal.ink);
+    setColour (juce::Slider::textBoxTextColourId, pal.ink);
     setColour (juce::Slider::textBoxOutlineColourId, juce::Colours::transparentBlack);
     setColour (juce::Slider::textBoxBackgroundColourId, juce::Colours::transparentBlack);
-    setColour (juce::Label::textColourId, dim);
+    setColour (juce::Label::textColourId, pal.dim);
 }
 
 void ScattrLNF::drawRotarySlider (juce::Graphics& g, int x, int y, int w, int h, float pos,
@@ -50,11 +56,11 @@ void ScattrLNF::drawRotarySlider (juce::Graphics& g, int x, int y, int w, int h,
     const float a = a0 + pos * (a1 - a0);
 
     // wooden stump
-    g.setColour (soil);
+    g.setColour (pal.soil);
     g.fillEllipse (c.x - rad, c.y - rad, rad * 2.f, rad * 2.f);
-    g.setColour (bark);
+    g.setColour (pal.bark);
     g.drawEllipse (c.x - rad, c.y - rad, rad * 2.f, rad * 2.f, 2.f);
-    g.setColour (bark.withAlpha (0.35f));
+    g.setColour (pal.bark.withAlpha (0.35f));
     g.drawEllipse (c.x - rad * 0.55f, c.y - rad * 0.55f, rad * 1.1f, rad * 1.1f, 1.f);
 
     // growth arc
@@ -62,25 +68,25 @@ void ScattrLNF::drawRotarySlider (juce::Graphics& g, int x, int y, int w, int h,
     juce::Path track, val;
     track.addCentredArc (c.x, c.y, ar, ar, 0.f, a0, a1, true);
     val.addCentredArc (c.x, c.y, ar, ar, 0.f, a0, a, true);
-    g.setColour (line);
+    g.setColour (pal.line);
     g.strokePath (track, juce::PathStrokeType (2.5f));
-    g.setColour (acc);
+    g.setColour (pal.acc);
     g.strokePath (val, juce::PathStrokeType (3.f));
 
     // leaf pointer
     const auto t = juce::AffineTransform::translation (0.f, -rad * 0.2f)
                        .followedBy (juce::AffineTransform::rotation (a))
                        .followedBy (juce::AffineTransform::translation (c.x, c.y));
-    g.setColour (amber);
+    g.setColour (pal.amber);
     g.fillPath (leafPath (rad * 0.75f, rad * 0.26f), t);
 }
 
 void ScattrLNF::drawButtonBackground (juce::Graphics& g, juce::Button& b, const juce::Colour&, bool over, bool down)
 {
     auto r = b.getLocalBounds().toFloat().reduced (0.5f);
-    g.setColour (down ? moss.brighter (0.2f) : over ? moss : soil);
+    g.setColour (down ? pal.moss.brighter (0.2f) : over ? pal.moss : pal.soil);
     g.fillRoundedRectangle (r, 8.f);
-    g.setColour (over ? acc : bark);
+    g.setColour (over ? pal.acc : pal.bark);
     g.drawRoundedRectangle (r, 8.f, 1.3f);
 }
 
@@ -89,17 +95,17 @@ void ScattrLNF::drawToggleButton (juce::Graphics& g, juce::ToggleButton& b, bool
     auto r = b.getLocalBounds().toFloat().reduced (0.5f);
     if (b.getToggleState())
     {
-        g.setColour (accDark);
+        g.setColour (pal.accDark);
         g.fillRoundedRectangle (r, 8.f);
-        g.setColour (ink);
+        g.setColour (pal.ink);
     }
     else
     {
-        g.setColour (soil);
+        g.setColour (pal.soil);
         g.fillRoundedRectangle (r, 8.f);
-        g.setColour (bark);
+        g.setColour (pal.bark);
         g.drawRoundedRectangle (r, 8.f, 1.3f);
-        g.setColour (dim);
+        g.setColour (pal.dim);
     }
     g.setFont (serif (14.f));
     g.drawText (b.getButtonText(), b.getLocalBounds(), juce::Justification::centred);
@@ -113,27 +119,32 @@ ScattrEditor::ScattrEditor (ScattrProcessor& p) : juce::AudioProcessorEditor (&p
     setSize (780, 650);
 
     struct Def { const char* id; const char* text; const char* suffix; int dp; };
-    static const Def defs[19] = {
-        { "size", "seed size", " ms", 0 }, { "dens", "rain", " /s", 0 }, { "pitch", "pitch", " st", 1 },
-        { "pjit", "wind", " st", 1 }, { "spray", "scatter", "", 2 }, { "hold", "bloom", " s", 1 },
-        { "gap", "rest", " s", 2 }, { "amp", "sun", "", 2 },
-        { "cutoff", "cutoff", " Hz", 0 }, { "reso", "reso", "", 2 }, { "drive", "drive", "", 2 },
-        { "dtime", "time", " ms", 0 }, { "dfb", "feedback", "", 2 }, { "dmix", "echo mix", "", 2 },
+    // dp = digits shown under the knob (whole numbers for big ranges, 0.00 style for the small ones)
+    static const Def defs[20] = {
+        { "size", "seed size", "", 0 }, { "dens", "rain", "", 0 }, { "pitch", "pitch", "", 2 },
+        { "pjit", "wind", "", 2 }, { "spray", "scatter", "", 2 }, { "hold", "bloom", "", 2 },
+        { "gap", "rest", "", 2 }, { "amp", "sun", "", 2 },
+        { "cutoff", "cutoff", "", 0 }, { "reso", "reso", "", 2 }, { "drive", "drive", "", 2 },
+        { "dtime", "time", "", 0 }, { "dfb", "feedback", "", 2 }, { "dmix", "echo mix", "", 2 },
         { "rsize", "size", "", 2 }, { "rdamp", "damp", "", 2 }, { "rmix", "reverb mix", "", 2 },
-        { "mtune", "master tune", " ct", 0 }, { "cycle", "cycle", " s", 2 }
+        { "mtune", "master tune", "", 0 }, { "cycle", "cycle", "", 2 }, { "rand", "random", "", 2 }
     };
 
     for (size_t i = 0; i < knobs.size(); ++i)
     {
         auto& k = knobs[i];
         k.slider.setSliderStyle (juce::Slider::RotaryHorizontalVerticalDrag);
-        k.slider.setTextBoxStyle (juce::Slider::TextBoxBelow, false, 70, 16);
+        k.slider.setTextBoxStyle (juce::Slider::TextBoxBelow, false, 60, 16);
         k.slider.setRotaryParameters (juce::MathConstants<float>::pi * 1.25f,
                                       juce::MathConstants<float>::pi * 2.75f, true);
-        k.slider.setNumDecimalPlacesToDisplay (defs[i].dp);
-        k.slider.setTextValueSuffix (defs[i].suffix);
         addAndMakeVisible (k.slider);
         k.attach = std::make_unique<juce::AudioProcessorValueTreeState::SliderAttachment> (proc.apvts, defs[i].id, k.slider);
+
+        // the attachment installs the host's long-winded text; replace it with a short fixed-decimals readout
+        const int dp = defs[i].dp;
+        k.slider.textFromValueFunction = [dp] (double v) { return juce::String (v, dp); };
+        k.slider.valueFromTextFunction = [] (const juce::String& t) { return t.retainCharacters ("-0123456789.").getDoubleValue(); };
+        k.slider.updateText();
 
         k.label.setText (defs[i].text, juce::dontSendNotification);
         k.label.setJustificationType (juce::Justification::centred);
@@ -171,6 +182,23 @@ ScattrEditor::ScattrEditor (ScattrProcessor& p) : juce::AudioProcessorEditor (&p
                             });
     };
 
+    addAndMakeVisible (themeBtn);
+    themeBtn.onClick = [this]
+    {
+        juce::PopupMenu menu;
+        const int cur = proc.themeIdx.load();
+        for (int i = 0; i < (int) Scat::themes().size(); ++i)
+            menu.addItem (i + 1, Scat::themes()[(size_t) i].name, true, i == cur);
+
+        juce::Component::SafePointer<ScattrEditor> safe (this);
+        menu.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (&themeBtn),
+                            [safe] (int result)
+                            {
+                                if (safe != nullptr && result > 0)
+                                    safe->applyTheme (result - 1);
+                            });
+    };
+
     addAndMakeVisible (loadBtn);
     addAndMakeVisible (clearBtn);
     addAndMakeVisible (droneBtn);
@@ -192,6 +220,7 @@ ScattrEditor::ScattrEditor (ScattrProcessor& p) : juce::AudioProcessorEditor (&p
     clearBtn.onClick = [this] { proc.clearSamples(); shown = -1; pinned = -1; listOff = 0; repaint(); };
 
     applyScale (proc.editorScale.load());
+    applyTheme (proc.themeIdx.load());
     startTimerHz (30);
 }
 
@@ -199,6 +228,17 @@ ScattrEditor::~ScattrEditor()
 {
     stopTimer();
     setLookAndFeel (nullptr);
+}
+
+void ScattrEditor::applyTheme (int idx)
+{
+    idx = juce::jlimit (0, (int) Scat::themes().size() - 1, idx);
+    proc.themeIdx = idx;
+    pal = Scat::themes()[(size_t) idx].pal;
+    lnf.setPalette (pal);
+    themeBtn.setButtonText (Scat::themes()[(size_t) idx].name);
+    sendLookAndFeelChange();   // refreshes the knob readouts' colours
+    repaint();
 }
 
 void ScattrEditor::applyScale (float s)
@@ -215,14 +255,15 @@ void ScattrEditor::resized()
     clearBtn.setBounds (w - 18 - 80 - 8 - 80, 26, 80, 26);
     loadBtn.setBounds  (w - 18 - 80 - 8 - 80 - 8 - 80, 26, 80, 26);
     tuneBtn.setBounds (w - 18 - 80, 244, 80, 22);
+    themeBtn.setBounds (w - 18 - 80 - 8 - 80, 244, 80, 22);
     scaleBtn.setBounds (w - 18 - 80 - 8 - 80 - 8 - 80 - 8 - 80, 26, 80, 26);
 
-    const int cw1 = (w - 36) / 10, cw2 = (w - 36) / 10;
+    const int cw1 = (w - 36) / 11, cw2 = (w - 36) / 10;
     for (size_t i = 0; i < knobs.size(); ++i)
     {
-        if (i < 8 || i == 17 || i == 18)   // grain row (key cycle, then master tune, sit at the end of it)
+        if (i < 8 || i >= 17)   // grain row (master tune, key cycle and randomizer sit at the end of it)
         {
-            const int col = i < 8 ? (int) i : (i == 18 ? 8 : 9);
+            const int col = i < 8 ? (int) i : (i == 18 ? 8 : i == 19 ? 9 : 10);
             const int x = 18 + col * cw1;
             knobs[i].label.setBounds (x, 414, cw1, 18);
             knobs[i].slider.setBounds (x, 430, cw1, 82);
@@ -365,7 +406,7 @@ void ScattrEditor::drawVine (juce::Graphics& g)
     juce::Path stem;
     stem.startNewSubPath (18.f, yAt (18.f));
     for (float x = 18.f; x <= (float) getWidth() - 18.f; x += 6.f) stem.lineTo (x, yAt (x));
-    g.setColour (grassDark);
+    g.setColour (pal.grassDark);
     g.strokePath (stem, juce::PathStrokeType (1.8f));
 
     int i = 0;
@@ -374,16 +415,16 @@ void ScattrEditor::drawVine (juce::Graphics& g)
         const float sway = 0.12f * std::sin (anim * 0.8f + x * 0.05f);
         const bool up = (i % 2 == 0);
         const float ang = (up ? 0.9f : juce::MathConstants<float>::pi - 0.9f) + sway;
-        const auto col = (i % 3 == 0 ? grass.darker (0.2f) : grassDark.brighter (0.15f)).withAlpha (0.85f);
+        const auto col = (i % 3 == 0 ? pal.grass.darker (0.2f) : pal.grassDark.brighter (0.15f)).withAlpha (0.85f);
         drawLeaf (g, x, yAt (x), ang, 16.f + (float) (i % 3) * 3.f, col);
 
         if (i % 3 == 1)   // a little wildflower on a stalk
         {
             const float fx = x + 22.f, fy = yAt (fx);
             const float tx = fx + sway * 30.f, ty = fy - 16.f;
-            g.setColour (grassDark);
+            g.setColour (pal.grassDark);
             g.drawLine (fx, fy, tx, ty, 1.3f);
-            drawFlower (g, tx, ty, 5.f, (i % 2 == 0 ? acc : acc.brighter (0.25f)));
+            drawFlower (g, tx, ty, 5.f, (i % 2 == 0 ? pal.acc : pal.acc.brighter (0.25f)), pal.amber);
         }
     }
 }
@@ -391,36 +432,36 @@ void ScattrEditor::drawVine (juce::Graphics& g)
 void ScattrEditor::paint (juce::Graphics& g)
 {
     {
-        juce::ColourGradient sky (bgTop, 0.f, 0.f, bgBot, 0.f, (float) getHeight(), false);
-        sky.addColour (0.30, bgMid);
+        juce::ColourGradient sky (pal.bgTop, 0.f, 0.f, pal.bgBot, 0.f, (float) getHeight(), false);
+        sky.addColour (0.30, pal.bgMid);
         g.setGradientFill (sky);
         g.fillAll();
 
         const float gx = (float) getWidth() * 0.82f;
-        g.setGradientFill (juce::ColourGradient (amber.withAlpha (0.12f), gx, 40.f, amber.withAlpha (0.f), gx, 320.f, true));
+        g.setGradientFill (juce::ColourGradient (pal.amber.withAlpha (0.12f), gx, 40.f, pal.amber.withAlpha (0.f), gx, 320.f, true));
         g.fillRect (0, 0, getWidth(), 330);
     }
 
     // title + little sprout
-    g.setColour (ink);
+    g.setColour (pal.ink);
     g.setFont (serif (38.f));
     g.drawText ("S C A T T R", 18, 14, 300, 50, juce::Justification::centredLeft);
     const float sw = 0.08f * std::sin (anim * 0.9f);
-    drawLeaf (g, 318.f, 52.f, 0.7f + sw, 20.f, grassDark.brighter (0.2f));
-    drawLeaf (g, 318.f, 52.f, -0.5f + sw, 16.f, grass.darker (0.3f));
-    drawLeaf (g, 318.f, 52.f, 0.1f + sw, 26.f, grass);
-    drawFlower (g, 318.f + std::sin (0.1f + sw) * 28.f, 52.f - 28.f, 5.5f, acc);
+    drawLeaf (g, 318.f, 52.f, 0.7f + sw, 20.f, pal.grassDark.brighter (0.2f));
+    drawLeaf (g, 318.f, 52.f, -0.5f + sw, 16.f, pal.grass.darker (0.3f));
+    drawLeaf (g, 318.f, 52.f, 0.1f + sw, 26.f, pal.grass);
+    drawFlower (g, 318.f + std::sin (0.1f + sw) * 28.f, 52.f - 28.f, 5.5f, pal.acc, pal.amber);
 
     // forest floor / waveform
     auto wr = waveRect();
-    g.setColour (soil);
+    g.setColour (pal.soil);
     g.fillRoundedRectangle (wr, 10.f);
-    g.setColour (bark);
+    g.setColour (pal.bark);
     g.drawRoundedRectangle (wr, 10.f, 1.5f);
 
     if (proc.samples.empty())
     {
-        g.setColour (dim);
+        g.setColour (pal.dim);
         g.setFont (serif (16.f, true));
         g.drawText ("plant some samples: drop audio files here", wr, juce::Justification::centred);
     }
@@ -432,8 +473,8 @@ void ScattrEditor::paint (juce::Graphics& g)
         const float cy = wr.getCentreY(), hh = wr.getHeight() * 0.44f;
 
         const float al = shownPlaying ? 1.f : pinned >= 0 ? 0.75f : 0.45f;
-        g.setGradientFill (juce::ColourGradient (acc.withAlpha (al), 0.f, wr.getY(),
-                                                 accDark.withAlpha (al), 0.f, wr.getBottom(), false));
+        g.setGradientFill (juce::ColourGradient (pal.acc.withAlpha (al), 0.f, wr.getY(),
+                                                 pal.accDark.withAlpha (al), 0.f, wr.getBottom(), false));
         for (int i = 0; i < n; ++i)
         {
             const float x = inner.getX() + inner.getWidth() * (float) i / (float) n;
@@ -442,11 +483,11 @@ void ScattrEditor::paint (juce::Graphics& g)
         }
 
         {
-            // trim bars: dim everything outside the playable region, then draw the two handles
+            // trim bars: darken everything outside the playable region, then draw the two handles
             const auto& sm = *proc.samples[(size_t) shown];
             const float xs = inner.getX() + sm.startN.load() * inner.getWidth();
             const float xe = inner.getX() + sm.endN.load() * inner.getWidth();
-            g.setColour (soil.withAlpha (0.72f));
+            g.setColour (pal.soil.withAlpha (0.72f));
             g.fillRect (inner.getX(), wr.getY() + 1.f, xs - inner.getX(), wr.getHeight() - 2.f);
             g.fillRect (xe, wr.getY() + 1.f, inner.getRight() - xe, wr.getHeight() - 2.f);
 
@@ -454,7 +495,7 @@ void ScattrEditor::paint (juce::Graphics& g)
             {
                 const float x = h == 1 ? xs : xe, dir = h == 1 ? 1.f : -1.f;
                 const bool hot = dragHandle == h;
-                g.setColour (hot ? amber : grass);
+                g.setColour (hot ? pal.amber : pal.grass);
                 g.drawLine (x, wr.getY() + 4.f, x, wr.getBottom() - 4.f, hot ? 2.5f : 1.8f);
                 juce::Path tri;
                 tri.addTriangle (x, cy - 7.f, x, cy + 7.f, x + dir * 9.f, cy);
@@ -473,8 +514,8 @@ void ScattrEditor::paint (juce::Graphics& g)
                 const float fy = wr.getY() + 14.f + t.y * (wr.getHeight() - 28.f)
                                  + 3.f * std::sin (anim * 3.f + t.pos * 20.f);
                 const float r = 4.f + 8.f * t.alpha;
-                g.setGradientFill (juce::ColourGradient (amber.withAlpha (0.9f * t.alpha), fx, fy,
-                                                         amber.withAlpha (0.f), fx + r, fy, true));
+                g.setGradientFill (juce::ColourGradient (pal.amber.withAlpha (0.9f * t.alpha), fx, fy,
+                                                         pal.amber.withAlpha (0.f), fx + r, fy, true));
                 g.fillEllipse (fx - r, fy - r, r * 2.f, r * 2.f);
                 g.setColour (juce::Colours::white.withAlpha (t.alpha));
                 g.fillEllipse (fx - 1.5f, fy - 1.5f, 3.f, 3.f);
@@ -483,20 +524,20 @@ void ScattrEditor::paint (juce::Graphics& g)
             const auto& sp = *proc.samples[(size_t) shown];
             const float rs = sp.startN.load(), re = sp.endN.load();
             const float px = inner.getX() + (rs + progress * (re - rs)) * inner.getWidth();
-            g.setColour (amber.withAlpha (0.8f));
+            g.setColour (pal.amber.withAlpha (0.8f));
             g.drawLine (px, wr.getY() + 6.f, px, wr.getBottom() - 6.f, 1.2f);
         }
     }
 
     // status
     g.setFont (serif (14.f, true));
-    g.setColour (dim);
+    g.setColour (pal.dim);
     juce::String st = proc.samples.empty() ? "the grove is empty"
                     : pinned >= 0 && pinned < (int) proc.samples.size()
-                          ? "trimming: " + proc.samples[(size_t) pinned]->name + "   (click its name again to follow playback)"
+                          ? "trimming: " + proc.samples[(size_t) pinned]->name + "  (click name to release)"
                     : playing && shown >= 0 ? "blooming: " + proc.samples[(size_t) shown]->name
                                             : "resting...";
-    g.drawText (st, 18, 246, getWidth() - 36 - 90, 18, juce::Justification::centredLeft);
+    g.drawText (st, 18, 246, getWidth() - 36 - 190, 18, juce::Justification::centredLeft);
 
     // sample list
     g.setFont (serif (14.f));
@@ -511,20 +552,20 @@ void ScattrEditor::paint (juce::Graphics& g)
         const bool isCur = playing && i == playIdx;
         if (i == pinned)
         {
-            g.setColour (amber.withAlpha (0.18f));
+            g.setColour (pal.amber.withAlpha (0.18f));
             g.fillRoundedRectangle (row.toFloat(), 6.f);
-            g.setColour (amber.withAlpha (0.6f));
+            g.setColour (pal.amber.withAlpha (0.6f));
             g.drawRoundedRectangle (row.toFloat().reduced (0.5f), 6.f, 1.f);
         }
         if (isCur)
         {
-            g.setColour (moss);
+            g.setColour (pal.moss);
             g.fillRoundedRectangle (row.toFloat(), 6.f);
         }
         drawLeaf (g, (float) row.getX() + 12.f, (float) row.getCentreY() + 5.f, 0.9f, 11.f,
-                  on ? (isCur ? grass : grassDark.brighter (0.2f)) : bark.withAlpha (0.6f));
+                  on ? (isCur ? pal.grass : pal.grassDark.brighter (0.2f)) : pal.bark.withAlpha (0.6f));
 
-        g.setColour (isCur ? ink : on ? dim.brighter (0.3f) : dim.withAlpha (0.5f));
+        g.setColour (isCur ? pal.ink : on ? pal.dim.brighter (0.3f) : pal.dim.withAlpha (0.5f));
         g.drawText (s.name + (on ? "" : "  (dormant)"), row.withTrimmedLeft (28).withTrimmedRight (110),
                     juce::Justification::centredLeft, true);
         const juce::String key = s.rootNote >= 0.f
@@ -536,9 +577,9 @@ void ScattrEditor::paint (juce::Graphics& g)
     drawVine (g);
 
     // section headings
-    auto head = [&g] (float x, float y, float w, const juce::String& t)
+    auto head = [&g, this] (float x, float y, float w, const juce::String& t)
     {
-        g.setColour (dim);
+        g.setColour (pal.dim);
         g.setFont (serif (13.f, true));
         g.drawText (t, (int) x, (int) y, (int) w, 16, juce::Justification::centredLeft);
     };

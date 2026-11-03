@@ -3,21 +3,41 @@
 
 namespace Scat
 {
-    // dusk-meadow palette: indigo sky, plum clouds, magenta blooms, sun gold, grass greens
-    inline const juce::Colour bgTop     { 0xff171a3b };
-    inline const juce::Colour bgMid     { 0xff33224a };
-    inline const juce::Colour bgBot     { 0xff0f1a15 };
-    inline const juce::Colour soil      { 0xff130f20 };
-    inline const juce::Colour moss      { 0xff382850 };
-    inline const juce::Colour ink       { 0xfff6e8de };
-    inline const juce::Colour dim       { 0xffb3a2c2 };
-    inline const juce::Colour line      { 0xff4d3f6b };
-    inline const juce::Colour bark      { 0xff86566e };
-    inline const juce::Colour acc       { 0xffee62c6 };
-    inline const juce::Colour accDark   { 0xff7b3a9e };
-    inline const juce::Colour amber     { 0xffffb347 };
-    inline const juce::Colour grass     { 0xff7bbf5e };
-    inline const juce::Colour grassDark { 0xff2f6b42 };
+    struct Palette
+    {
+        juce::Colour bgTop, bgMid, bgBot, soil, moss, ink, dim, line, bark, acc, accDark, amber, grass, grassDark;
+    };
+
+    inline Palette makePal (juce::uint32 bgTop, juce::uint32 bgMid, juce::uint32 bgBot, juce::uint32 soil,
+                            juce::uint32 moss, juce::uint32 ink, juce::uint32 dim, juce::uint32 line,
+                            juce::uint32 bark, juce::uint32 acc, juce::uint32 accDark, juce::uint32 amber,
+                            juce::uint32 grass, juce::uint32 grassDark)
+    {
+        return { juce::Colour (bgTop), juce::Colour (bgMid), juce::Colour (bgBot), juce::Colour (soil),
+                 juce::Colour (moss), juce::Colour (ink), juce::Colour (dim), juce::Colour (line),
+                 juce::Colour (bark), juce::Colour (acc), juce::Colour (accDark), juce::Colour (amber),
+                 juce::Colour (grass), juce::Colour (grassDark) };
+    }
+
+    struct Theme { const char* name; Palette pal; };
+
+    // sky top/mid/bottom, panel, hover, text, dim text, track, border, accent, accent dark, highlight, leaf, leaf dark
+    inline const std::array<Theme, 5>& themes()
+    {
+        static const std::array<Theme, 5> t {{
+            { "twilight", makePal (0xff171a3b, 0xff33224a, 0xff0f1a15, 0xff130f20, 0xff382850, 0xfff6e8de, 0xffb3a2c2,
+                                   0xff4d3f6b, 0xff86566e, 0xffee62c6, 0xff7b3a9e, 0xffffb347, 0xff7bbf5e, 0xff2f6b42) },
+            { "summer",   makePal (0xff0f3b57, 0xff1b6a7a, 0xff0f2a1f, 0xff0b2a35, 0xff1f5663, 0xfffff6e0, 0xff9ccbd0,
+                                   0xff2f7482, 0xff3f8a8f, 0xffff7a45, 0xffc2410c, 0xffffd23f, 0xff8fd14f, 0xff2e8540) },
+            { "autumn",   makePal (0xff2b1710, 0xff4a2314, 0xff1a120c, 0xff1c110b, 0xff4a3020, 0xfff8e6cf, 0xffc9a98a,
+                                   0xff6b4630, 0xff9a5b34, 0xffe8641c, 0xff8f2d0f, 0xffffb02e, 0xffd08a2a, 0xff7d3a1a) },
+            { "winter",   makePal (0xff0b1d33, 0xff1c3a5e, 0xff0b141c, 0xff0a1624, 0xff23405f, 0xffeaf6ff, 0xff9fb9d0,
+                                   0xff345676, 0xff5f87ad, 0xff6fd3ff, 0xff2a6fb0, 0xffd8f1ff, 0xff9fe0d6, 0xff2d6b78) },
+            { "spring",   makePal (0xff1b3a2b, 0xff2f5e4a, 0xff10211a, 0xff0f2219, 0xff2f5a43, 0xfff3fff0, 0xffa9cdb4,
+                                   0xff3f7a58, 0xff6f9a6a, 0xffff8fc7, 0xffb8467f, 0xffffe27a, 0xff8fe06a, 0xff3a8a48) }
+        }};
+        return t;
+    }
 
     inline juce::Font serif (float h, bool italic = false)
     {
@@ -41,6 +61,8 @@ namespace Scat
 struct ScattrLNF : public juce::LookAndFeel_V4
 {
     ScattrLNF();
+    void setPalette (const Scat::Palette&);
+    Scat::Palette pal;
     void drawRotarySlider (juce::Graphics&, int x, int y, int w, int h, float pos, float a0, float a1, juce::Slider&) override;
     void drawButtonBackground (juce::Graphics&, juce::Button&, const juce::Colour&, bool over, bool down) override;
     void drawToggleButton (juce::Graphics&, juce::ToggleButton&, bool over, bool down) override;
@@ -72,6 +94,7 @@ private:
     void timerCallback() override;
     void drawVine (juce::Graphics&);
     void applyScale (float newScale);
+    void applyTheme (int idx);
     juce::Rectangle<float> waveRect() const { return { 18.f, 72.f, (float) getWidth() - 36.f, 170.f }; }
     juce::Rectangle<float> waveInner() const { return waveRect().reduced (10.f, 0.f); }
     int hitHandle (float x) const;   // 0 = none, 1 = start bar, 2 = end bar (for the shown sample)
@@ -87,10 +110,12 @@ private:
 
     ScattrProcessor& proc;
     ScattrLNF lnf;
-    std::array<Knob, 19> knobs;
+    Scat::Palette pal;
+    std::array<Knob, 20> knobs;
     juce::TextButton loadBtn { "PLANT" }, clearBtn { "CLEAR" };
     juce::TextButton typeBtn { "LP" };
     juce::TextButton scaleBtn { "100%" };
+    juce::TextButton themeBtn { "twilight" };
     juce::ToggleButton droneBtn { "DRIFT" };
     std::unique_ptr<juce::AudioProcessorValueTreeState::ButtonAttachment> droneAttach;
     juce::ToggleButton tuneBtn { "TUNE" };
