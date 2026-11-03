@@ -364,8 +364,9 @@ void ScattrProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::Midi
             {
                 if (remaining <= 0)
                 {
+                    // while a key is held, roll straight into the next sample (no silent rest)
                     phase = Phase::Gap;
-                    remaining = (int) (gapS * sr);
+                    remaining = notesHeld > 0 ? 0 : (int) (gapS * sr);
                 }
                 else
                 {
