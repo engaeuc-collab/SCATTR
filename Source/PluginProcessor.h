@@ -115,6 +115,8 @@ private:
     int remaining = 0, holdTotal = 1, cur = -1, last = -1;
     double grainCountdown = 0.0, currentSr = 44100.0;
     int notesHeld = 0, heldNote = 60;
+    double playhead = 0.0;    // while a key is held: 0..1 position of the sweep through the sample's playable region
+    bool noteDone = false;    // the held key's sample has played all the way through (silent until the next key)
     bool retrigger = false;   // set on every note-on: jump to a fresh random sample right away
     juce::Random rng;
 

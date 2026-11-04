@@ -156,7 +156,7 @@ const Tip kTips[29] = {
     { "damp",          "Absorbs highs in the tail. More damping sounds darker and softer." },
     { "reverb mix",    "Level of the reverb against the dry sound." },
     { "master tune",   "Fine tuning for everything, in cents." },
-    { "cycle",         "While a key is held: seconds before the next sample takes over." },
+    { "cycle",         "(retired) Held keys now play each sample all the way through." },
     { "random",        "Chance that a grain is borrowed from a different sample." },
     { "filter mix",    "Blends between the dry sound and the filtered sound." },
     { "pan spread",    "Scatters grains randomly left and right. Zero keeps them centred." },
@@ -572,7 +572,7 @@ void ScattrPanel::setTab (int t)
     const bool g = (t == 0);
     for (size_t i = 0; i < knobs.size(); ++i)
     {
-        const bool vis = (onGrainsTab (i) == g);
+        const bool vis = (onGrainsTab (i) == g) && i != 18;   // 18 = "cycle": retired, samples now play all the way through
         knobs[i].slider.setVisible (vis);
         knobs[i].label.setVisible (vis);
     }
@@ -611,13 +611,13 @@ void ScattrPanel::resized()
     // grains tab: two roomy rows
     {
         static const size_t row1[7] = { 0, 1, 2, 3, 4, 21, 17 };  // seed size, rain, speed, wind, scatter, pan spread, master tune
-        static const size_t row2[5] = { 5, 6, 18, 19, 7 };        // bloom, rest, cycle, random, sun
+        static const size_t row2[4] = { 5, 6, 19, 7 };             // bloom, rest, random, sun
         for (int k = 0; k < 7; ++k) place (row1[k], grainPanel(), 7, k, 88);
-        for (int k = 0; k < 5; ++k) place (row2[k], motionPanel(), 7, k, 88);
+        for (int k = 0; k < 4; ++k) place (row2[k], motionPanel(), 7, k, 88);
 
         const auto mp = motionPanel();
         const int sw = (int) ((mp.getWidth() - 24.f) / 7.f);
-        const int bx = (int) mp.getX() + 12 + 5 * sw + (sw - 80) / 2;
+        const int bx = (int) mp.getX() + 12 + 4 * sw + (sw - 80) / 2;
         droneBtn.setBounds (bx, (int) mp.getY() + 40, 80, 28);
         tuneBtn.setBounds  (bx, (int) mp.getY() + 78, 80, 28);
     }
@@ -1099,7 +1099,7 @@ void ScattrPanel::paintAtmosphere (juce::Graphics& g)
 void ScattrPanel::paintTitleGlow (juce::Graphics& g)
 {
     const float twoPi = juce::MathConstants<float>::twoPi;
-    g.setFont (titleFont (42.f));
+    g.setFont (titleFont (50.f));
     for (int layer = 0; layer < 3; ++layer)
     {
         const float rr = 6.f - 2.f * (float) layer;   // 6, 4, 2 px
@@ -1510,7 +1510,7 @@ void ScattrPanel::paintGlints (juce::Graphics& g)
 void ScattrPanel::paintLabels (juce::Graphics& g)
 {
     // title: soft shadow, then letters that warm from ivory to the highlight colour (the glow is in the cache)
-    g.setFont (titleFont (42.f));
+    g.setFont (titleFont (50.f));
     g.setColour (juce::Colours::black.withAlpha (0.45f));
     g.drawText ("Nature", 19, 16, 300, 50, juce::Justification::centredLeft);
     g.setGradientFill (juce::ColourGradient (pal.ink, 0.f, 18.f, pal.ink.interpolatedWith (pal.amber, 0.55f), 0.f, 60.f, false));
@@ -1763,11 +1763,11 @@ void ScattrPanel::paint (juce::Graphics& g)
     // little sprout beside the title
     {
         const float sw = 0.08f * std::sin (anim * 0.9f);
-        drawLeaf (g, 318.f, 52.f, 0.7f + sw, 20.f, pal.grassDark.brighter (0.2f));
-        drawLeaf (g, 318.f, 52.f, -0.5f + sw, 16.f, pal.grass.darker (0.3f));
-        drawLeaf (g, 318.f, 52.f, 0.1f + sw, 26.f, pal.grass);
+        drawLeaf (g, 302.f, 52.f, 0.7f + sw, 20.f, pal.grassDark.brighter (0.2f));
+        drawLeaf (g, 302.f, 52.f, -0.5f + sw, 16.f, pal.grass.darker (0.3f));
+        drawLeaf (g, 302.f, 52.f, 0.1f + sw, 26.f, pal.grass);
 
-        const float fx = 318.f + std::sin (0.1f + sw) * 28.f, fy = 52.f - 28.f;
+        const float fx = 302.f + std::sin (0.1f + sw) * 28.f, fy = 52.f - 28.f;
         g.setGradientFill (juce::ColourGradient (pal.glow.withAlpha (0.6f), fx, fy, pal.glow.withAlpha (0.f), fx + 18.f, fy, true));
         g.fillEllipse (fx - 18.f, fy - 18.f, 36.f, 36.f);
         drawFlower (g, fx, fy, 5.5f, pal.acc, pal.amber);

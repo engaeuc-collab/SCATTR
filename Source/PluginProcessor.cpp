@@ -384,6 +384,7 @@ void ScattrProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::Midi
         remaining = 0;
         cur = last = -1;
         bagCount = 0;
+        noteDone = false;
     }
 
     auto prm = [this] (const char* id) { return apvts.getRawParameterValue (id)->load(); };
@@ -391,6 +392,8 @@ void ScattrProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::Midi
                 spray = prm ("spray"), holdS = prm ("hold"), gapS = prm ("gap"), cycleS = prm ("cycle"), randAmt = prm ("rand"), width = prm ("width"),
                 amp = prm ("amp");
     const bool active = prm ("drone") > 0.5f || notesHeld > 0;
+    juce::ignoreUnused (cycleS);   // the cycle knob is retired; held keys play each sample through
+    const bool keyMode = notesHeld > 0;   // a key is down: the sample plays through once, then waits for the next key
 
     const double sr = currentSr;
     const int numSamples = buffer.getNumSamples();
@@ -476,8 +479,14 @@ void ScattrProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::Midi
         if (len <= 32) return;
 
         // the playhead sweeps the region once per bloom / cycle at 1x; the speed knob scales that (and wraps)
-        double prog = (1.0 - (double) remaining / (double) holdTotal) * (double) speed;
-        prog -= std::floor (prog);
+        double prog;
+        if (keyMode)
+            prog = playhead;   // key held: the real playhead, 0 -> 1 across the whole region
+        else
+        {
+            prog = (1.0 - (double) remaining / (double) holdTotal) * (double) speed;
+            prog -= std::floor (prog);
+        }
         double start = regS + (prog + (rng.nextFloat() - 0.5f) * spray) * regLen;
         start = juce::jlimit (regS, juce::jmax (regS, regE - (double) len * inc - 3.0), start);
 
@@ -503,7 +512,9 @@ void ScattrProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::Midi
         {
             cur = last = i;
             phase = Phase::Play;
-            holdTotal = remaining = juce::jmax (1, (int) (cycleS * sr));
+            holdTotal = remaining = 1 << 30;   // the sweep ends when the playhead reaches the end, not on a timer
+            playhead = 0.0;
+            noteDone = false;
             grainCountdown = 0.0;
         }
 
@@ -522,7 +533,8 @@ void ScattrProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::Midi
         {
             if (phase == Phase::Gap)
             {
-                if (remaining > 0) --remaining;
+                if (keyMode && noteDone) { /* finished: stay quiet until the key is released and pressed again */ }
+                else if (remaining > 0) --remaining;
                 else
                 {
                     const int i = pickSample();
@@ -530,18 +542,19 @@ void ScattrProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::Midi
                     {
                         cur = last = i;
                         phase = Phase::Play;
-                        holdTotal = remaining = juce::jmax (1, (int) ((notesHeld > 0 ? cycleS : holdS) * sr));
+                        if (keyMode) { holdTotal = remaining = 1 << 30; playhead = 0.0; noteDone = false; }
+                        else         holdTotal = remaining = juce::jmax (1, (int) (holdS * sr));
                         grainCountdown = 0.0;
                     }
                 }
             }
             if (phase == Phase::Play)
             {
-                if (remaining <= 0)
+                if (keyMode ? (playhead >= 1.0) : (remaining <= 0))
                 {
-                    // while a key is held, roll straight into the next sample (no silent rest)
                     phase = Phase::Gap;
-                    remaining = notesHeld > 0 ? 0 : (int) (gapS * sr);
+                    if (keyMode) { noteDone = true; remaining = 0; }   // played all the way through
+                    else           remaining = (int) (gapS * sr);
                 }
                 else
                 {
@@ -552,6 +565,14 @@ void ScattrProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::Midi
                     }
                     grainCountdown -= 1.0;
                     --remaining;
+
+                    if (keyMode && cur >= 0 && cur < (int) samples.size())
+                    {
+                        // advance the playhead: 1x = the sample's own speed, so a whole file takes its own length to play
+                        const Sample& cs = *samples[(size_t) cur];
+                        const double regLen = juce::jmax (1.0, (double) (cs.endN.load() - cs.startN.load()) * (double) cs.length);
+                        playhead += (double) speed * cs.sampleRate / (sr * regLen);
+                    }
                 }
             }
         }
@@ -559,6 +580,7 @@ void ScattrProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::Midi
         {
             phase = Phase::Gap;
             remaining = 0;
+            noteDone = false;
         }
 
         float oL = 0.f, oR = 0.f;
@@ -737,8 +759,14 @@ void ScattrProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::Midi
     uiSample.store (cur);
     uiPlaying.store (active && phase == Phase::Play);
     {
-        float pr = phase == Phase::Play ? (1.f - (float) remaining / (float) holdTotal) * speed : 0.f;
-        pr -= std::floor (pr);
+        float pr = 0.f;
+        if (keyMode)
+            pr = phase == Phase::Play ? (float) juce::jmin (1.0, playhead) : (noteDone ? 1.f : 0.f);
+        else if (phase == Phase::Play)
+        {
+            pr = (1.f - (float) remaining / (float) holdTotal) * speed;
+            pr -= std::floor (pr);
+        }
         uiProgress.store (pr);
     }
 }

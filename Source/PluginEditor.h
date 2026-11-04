@@ -178,7 +178,7 @@ private:
     juce::Rectangle<float> motionPanel() const { return { 18.f, 384.f, 744.f, 130.f }; }
     juce::Rectangle<float> fxPanel (int k) const { return { 18.f, 80.f + (float) k * 144.f, 744.f, 136.f }; }
     juce::Rectangle<float> waveInner() const  { return waveRect().reduced (10.f, 0.f); }
-    juce::Rectangle<float> eqRect() const     { return { 206.f, 20.f, 94.f, 42.f }; }   // the gap right of the title
+    juce::Rectangle<float> eqRect() const     { return { 186.f, 20.f, 94.f, 42.f }; }   // sits right beside the title
     int hitHandle (float x) const;   // 0 = none, 1 = start bar, 2 = end bar (for the shown sample)
 
     static constexpr int rowH = 20, maxRows = 5, listTop = 34;
