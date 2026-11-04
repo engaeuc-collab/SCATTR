@@ -81,6 +81,13 @@ public:
     // Colour theme index, saved with the plugin state
     std::atomic<int> themeIdx { 0 };
 
+    // Output tap for the header equalizer. The audio thread writes, the UI thread reads; a torn read
+    // only blurs a single frame of the display.
+    static constexpr int scopeSize = 4096;   // power of two
+    std::atomic<float> scopeBuf[scopeSize];
+    std::atomic<int>   scopeW { 0 };         // next write index, always kept in 0..scopeSize-1
+    std::atomic<float> uiSampleRate { 44100.f };
+
 private:
     struct Grain
     {

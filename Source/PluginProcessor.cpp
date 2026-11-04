@@ -56,7 +56,7 @@ juce::AudioProcessorValueTreeState::ParameterLayout makeLayout()
     p.push_back (std::make_unique<juce::AudioParameterBool> (juce::ParameterID { "ron", 1 }, "Reverb On", false));
 
     p.push_back (std::make_unique<juce::AudioParameterBool> (
-        juce::ParameterID { "drone", 1 }, "Drone (free-run)", true));
+        juce::ParameterID { "drone", 1 }, "Drone (free-run)", false));   // off by default: keys play it
 
     p.push_back (std::make_unique<juce::AudioParameterBool> (
         juce::ParameterID { "tune", 1 }, "Tune Samples", true));
@@ -164,6 +164,7 @@ ScattrProcessor::ScattrProcessor()
       apvts (*this, nullptr, "STATE", makeLayout())
 {
     formats.registerBasicFormats();
+    for (auto& s : scopeBuf) s.store (0.f, std::memory_order_relaxed);
     for (int i = 0; i <= 1024; ++i)
         env[i] = 0.5f - 0.5f * std::cos (juce::MathConstants<float>::twoPi * (float) i / 1024.f);
     loadTextures();
@@ -713,6 +714,18 @@ void ScattrProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::Midi
         reverb.reset();
         for (auto& b : preBuf) std::fill (b.begin(), b.end(), 0.f);
         revActive = false;
+    }
+
+    // feed the header equalizer with the finished (post-effects) mono signal
+    {
+        int w = scopeW.load (std::memory_order_relaxed);
+        for (int n = 0; n < numSamples; ++n)
+        {
+            scopeBuf[w].store (R != nullptr ? 0.5f * (L[n] + R[n]) : L[n], std::memory_order_relaxed);
+            w = (w + 1) & (scopeSize - 1);
+        }
+        scopeW.store (w, std::memory_order_release);
+        uiSampleRate.store ((float) sr, std::memory_order_relaxed);
     }
 
     uiSample.store (cur);

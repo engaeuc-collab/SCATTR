@@ -5,38 +5,39 @@ namespace Scat
 {
     struct Palette
     {
-        juce::Colour bgTop, bgMid, bgBot, soil, moss, ink, dim, line, bark, acc, accDark, amber, grass, grassDark;
+        juce::Colour bgTop, bgMid, bgBot, soil, moss, ink, dim, line, bark, acc, accDark, amber, grass, grassDark, glow;
     };
 
     inline Palette makePal (juce::uint32 bgTop, juce::uint32 bgMid, juce::uint32 bgBot, juce::uint32 soil,
                             juce::uint32 moss, juce::uint32 ink, juce::uint32 dim, juce::uint32 line,
                             juce::uint32 bark, juce::uint32 acc, juce::uint32 accDark, juce::uint32 amber,
-                            juce::uint32 grass, juce::uint32 grassDark)
+                            juce::uint32 grass, juce::uint32 grassDark, juce::uint32 glow)
     {
         return { juce::Colour (bgTop), juce::Colour (bgMid), juce::Colour (bgBot), juce::Colour (soil),
                  juce::Colour (moss), juce::Colour (ink), juce::Colour (dim), juce::Colour (line),
                  juce::Colour (bark), juce::Colour (acc), juce::Colour (accDark), juce::Colour (amber),
-                 juce::Colour (grass), juce::Colour (grassDark) };
+                 juce::Colour (grass), juce::Colour (grassDark), juce::Colour (glow) };
     }
 
     struct Theme { const char* name; Palette pal; };
 
-    // sky top/mid/bottom, panel, hover, text, dim text, track, border, accent, accent dark, highlight, leaf, leaf dark
+    // sky top/mid/bottom, panel, hover, text, dim text, track, border, accent, accent dark, highlight, leaf, leaf dark, light
+    // "light" is the colour of the glow that spills out of cards, the sun / aurora in the sky and the floating motes.
     inline const std::array<Theme, 4>& themes()
     {
         static const std::array<Theme, 4> t {{
-            { "summer",
-              makePal (0xff0f3b57, 0xff1b6a7a, 0xff0f2a1f, 0xff0b2a35, 0xff1f5663, 0xfffff6e0, 0xff9ccbd0,
-                       0xff2f7482, 0xff3f8a8f, 0xffff7a45, 0xffc2410c, 0xffffd23f, 0xff8fd14f, 0xff2e8540) },
-            { "autumn",
-              makePal (0xff2b1710, 0xff4a2314, 0xff1a120c, 0xff1c110b, 0xff4a3020, 0xfff8e6cf, 0xffc9a98a,
-                       0xff6b4630, 0xff9a5b34, 0xffe8641c, 0xff8f2d0f, 0xffffb02e, 0xffd08a2a, 0xff7d3a1a) },
-            { "winter",
-              makePal (0xff0b1d33, 0xff1c3a5e, 0xff0b141c, 0xff0a1624, 0xff23405f, 0xffeaf6ff, 0xff9fb9d0,
-                       0xff345676, 0xff5f87ad, 0xff6fd3ff, 0xff2a6fb0, 0xffd8f1ff, 0xff9fe0d6, 0xff2d6b78) },
-            { "spring",
-              makePal (0xff1b3a2b, 0xff2f5e4a, 0xff10211a, 0xff0f2219, 0xff2f5a43, 0xfff3fff0, 0xffa9cdb4,
-                       0xff3f7a58, 0xff6f9a6a, 0xffff8fc7, 0xffb8467f, 0xffffe27a, 0xff8fe06a, 0xff3a8a48) }
+            { "summer",   // lagoon at golden hour
+              makePal (0xff0b3a5a, 0xff16807f, 0xff0b2b22, 0xff08292f, 0xff1b5d66, 0xfffff4dc, 0xff9fd4cf,
+                       0xff2a7a84, 0xff3f9a97, 0xffff8a3d, 0xffc2410c, 0xffffd34d, 0xff9be15d, 0xff2f9a4a, 0xffffc46b) },
+            { "autumn",   // plum dusk over embers
+              makePal (0xff2b1233, 0xff6b2a2f, 0xff170d0b, 0xff1d0f10, 0xff4d2a2b, 0xfffbe9d3, 0xffd4a99a,
+                       0xff7a3d36, 0xffa8573a, 0xffff6b35, 0xff9a2a14, 0xffffb84a, 0xffe0a032, 0xff8a3f1c, 0xffff9a52) },
+            { "winter",   // aurora night
+              makePal (0xff070f2b, 0xff1b3f73, 0xff08121c, 0xff0a1526, 0xff213f63, 0xffeef8ff, 0xffa4bcd6,
+                       0xff32577c, 0xff6a8fb8, 0xff6fd8ff, 0xff2a6fb0, 0xffe6f6ff, 0xff9fe8dc, 0xff2d6e7e, 0xff7affd4) },
+            { "spring",   // blossom morning
+              makePal (0xff1e4a3c, 0xff3f7f5c, 0xff0f241b, 0xff0e241b, 0xff2f6049, 0xfff6fff2, 0xffb0d6ba,
+                       0xff437f5e, 0xff79a572, 0xffff8cc6, 0xffb8467f, 0xffffe58a, 0xff9be86a, 0xff3b8f4a, 0xffffc2e2) }
         }};
         return t;
     }
@@ -47,6 +48,9 @@ namespace Scat
         if (italic) f.setItalic (true);
         return f;
     }
+
+    // Space kept around a rotary knob inside its slider bounds (the arc glow has to fit in it)
+    inline constexpr float knobPad = 9.f;
 
     // A leaf pointing up from the origin
     inline juce::Path leafPath (float len, float wid)
@@ -107,16 +111,31 @@ private:
     void showSampleMenu (int idx);   // right-click menu on a sample: mute / remove
     void setTab (int t);
 
-    void paintGrainsTab (juce::Graphics&);
-    void paintFxTab (juce::Graphics&);
+    // static layer: sky, atmosphere and card shells. Drawn once per theme / tab into `cache`, then blitted every frame.
+    void rebuildCache();
+    void paintStatic (juce::Graphics&);
+    void fillSky (juce::Graphics&);
+    void paintAtmosphere (juce::Graphics&);
+    void paintTitleGlow (juce::Graphics&);
+    void drawGlass (juce::Graphics&, juce::Rectangle<float>, float radius, float tint, bool inset = false);
+    void drawGroup (juce::Graphics&, juce::Rectangle<float>);
+    void drawGroupTitle (juce::Graphics&, juce::Rectangle<float>, const juce::String&);
+
+    // live layer
+    void paintMotes (juce::Graphics&);       // slow themed light particles drifting over the whole window
+    void paintGlints (juce::Graphics&);      // a highlight that sweeps along the top edge of each card
+    void paintLabels (juce::Graphics&);
+    void paintEq (juce::Graphics&);
     void paintWave (juce::Graphics&);
     void paintSamples (juce::Graphics&);
-    void paintBackdrop (juce::Graphics&);
-    void fillSky (juce::Graphics&);
     void paintIdleDrift (juce::Graphics&, juce::Rectangle<float> area);   // themed floaters while nothing is playing
-    void drawGlass (juce::Graphics&, juce::Rectangle<float>, float radius, float tint, bool inset = false);
-    void drawGroup (juce::Graphics&, juce::Rectangle<float>, const juce::String&);
+    void paintKnobGlows (juce::Graphics&);   // soft bloom behind every knob; grows with its value
+    void paintToggleGlows (juce::Graphics&); // glow behind lit on/off buttons (animated)
+    void paintTip (juce::Graphics&);
     void drawVine (juce::Graphics&);
+
+    void updateEq();
+    int hoveredControl() const;              // index into the tip table, or -1
 
     // layout (design units)
     juce::Rectangle<float> waveRect() const   { return { 18.f, 76.f, 480.f, 142.f }; }
@@ -125,6 +144,7 @@ private:
     juce::Rectangle<float> motionPanel() const { return { 18.f, 384.f, 744.f, 130.f }; }
     juce::Rectangle<float> fxPanel (int k) const { return { 18.f, 80.f + (float) k * 144.f, 744.f, 136.f }; }
     juce::Rectangle<float> waveInner() const  { return waveRect().reduced (10.f, 0.f); }
+    juce::Rectangle<float> eqRect() const     { return { 206.f, 20.f, 94.f, 42.f }; }   // the gap right of the title
     int hitHandle (float x) const;   // 0 = none, 1 = start bar, 2 = end bar (for the shown sample)
 
     static constexpr int rowH = 20, maxRows = 5, listTop = 34;
@@ -156,6 +176,25 @@ private:
     juce::ToggleButton tuneBtn { "TUNE" };
     std::unique_ptr<juce::AudioProcessorValueTreeState::ButtonAttachment> tuneAttach;
     std::unique_ptr<juce::FileChooser> chooser;
+
+    // cached static layer (2x design size so it stays sharp at 200 %)
+    juce::Image cache;
+    int cacheTheme = -1, cacheTab = -1;
+    static constexpr float cacheScale = 2.f;
+
+    // header equalizer
+    static constexpr int eqBands = 14, eqN = 2048;
+    juce::dsp::FFT fft { 11 };   // 2^11 = eqN
+    juce::dsp::WindowingFunction<float> window { (size_t) eqN, juce::dsp::WindowingFunction<float>::hann, false };
+    std::array<float, (size_t) eqN * 2> fftData {};
+    std::array<float, (size_t) eqBands> eqLevel {}, eqPeak {};
+    float eqRef = -32.f;
+    int lastScopeW = -1, scopeStale = 0;
+
+    // hover tips: a note appears after the pointer rests on a control for a moment
+    int hoverId = -1, tipId = -1;
+    double hoverSince = 0.0, tipDelayMs = 1200.0, lastTickMs = 0.0;
+    float tipAlpha = 0.f;
 
     struct Tick { float pos, y, alpha; };
     std::vector<Tick> ticks;
