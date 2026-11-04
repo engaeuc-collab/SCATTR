@@ -18,7 +18,11 @@ juce::AudioProcessorValueTreeState::ParameterLayout makeLayout()
 
     add ("size",  "Grain Size",  40.f, 500.f, 120.f, 0.5f);
     add ("dens",  "Density",     1.f,  80.f,  25.f,  0.5f);
-    add ("pitch", "Pitch",      -24.f, 24.f,  0.f,   1.f);
+    {   // playhead speed: 1x in the middle of the knob, 0.1x .. 4x
+        NR r (0.1f, 4.f);
+        r.setSkewForCentre (1.f);
+        p.push_back (std::make_unique<juce::AudioParameterFloat> (juce::ParameterID { "speed", 1 }, "Speed", r, 1.f));
+    }
     add ("wind",  "Wind Texture", 0.f, 1.f,   0.f,   1.f);   // level of the looping texture layer
     add ("spray", "Spray",        0.f, 1.f,   0.1f,  1.f);
     add ("hold",  "Hold",         0.5f, 20.f, 4.f,   0.5f);
@@ -383,7 +387,7 @@ void ScattrProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::Midi
     }
 
     auto prm = [this] (const char* id) { return apvts.getRawParameterValue (id)->load(); };
-    const float sizeMs = prm ("size"), dens = prm ("dens"), pitch = prm ("pitch"), wind = prm ("wind"),
+    const float sizeMs = prm ("size"), dens = prm ("dens"), speed = prm ("speed"), wind = prm ("wind"),
                 spray = prm ("spray"), holdS = prm ("hold"), gapS = prm ("gap"), cycleS = prm ("cycle"), randAmt = prm ("rand"), width = prm ("width"),
                 amp = prm ("amp");
     const bool active = prm ("drone") > 0.5f || notesHeld > 0;
@@ -466,12 +470,14 @@ void ScattrProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::Midi
         const double regLen = juce::jmax (1.0, regE - regS);
         // tuned: shift this sample from its own detected pitch to the target note
         const float keyOff = (tuneOn && s.rootNote >= 0.f) ? targetNote - s.rootNote : pitchOff;
-        const float semis = pitch + keyOff + masterTune;
+        const float semis = keyOff + masterTune;
         const double inc = std::pow (2.0, semis / 12.0) * s.sampleRate / sr;
         const int len = juce::jmin (len0, (int) ((regLen - 4.0) / inc));
         if (len <= 32) return;
 
-        const double prog = 1.0 - (double) remaining / (double) holdTotal;
+        // the playhead sweeps the region once per bloom / cycle at 1x; the speed knob scales that (and wraps)
+        double prog = (1.0 - (double) remaining / (double) holdTotal) * (double) speed;
+        prog -= std::floor (prog);
         double start = regS + (prog + (rng.nextFloat() - 0.5f) * spray) * regLen;
         start = juce::jlimit (regS, juce::jmax (regS, regE - (double) len * inc - 3.0), start);
 
@@ -730,7 +736,11 @@ void ScattrProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::Midi
 
     uiSample.store (cur);
     uiPlaying.store (active && phase == Phase::Play);
-    uiProgress.store (phase == Phase::Play ? 1.f - (float) remaining / (float) holdTotal : 0.f);
+    {
+        float pr = phase == Phase::Play ? (1.f - (float) remaining / (float) holdTotal) * speed : 0.f;
+        pr -= std::floor (pr);
+        uiProgress.store (pr);
+    }
 }
 
 // ---------------------------------------------------------------- state

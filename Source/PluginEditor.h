@@ -69,6 +69,20 @@ namespace Scat
         return f;
     }
 
+    // Title face: a light, rounded sans (first one installed wins), with a little extra letter spacing so the
+    // name reads soft and airy. Falls back to the system sans in its light style.
+    inline juce::Font titleFont (float h)
+    {
+        static const juce::String name = []
+        {
+            const auto all = juce::Font::findAllTypefaceNames();
+            for (auto* c : { "Quicksand", "Nunito", "Varela Round", "Segoe UI", "Avenir Next", "Helvetica Neue" })
+                if (all.contains (c)) return juce::String (c);
+            return juce::Font::getDefaultSansSerifFontName();
+        }();
+        return juce::Font (juce::FontOptions().withName (name).withStyle ("Light").withHeight (h).withKerningFactor (0.14f));
+    }
+
     // Space kept around a rotary knob inside its slider bounds (the arc glow has to fit in it)
     inline constexpr float knobPad = 9.f;
 

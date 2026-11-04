@@ -140,7 +140,7 @@ struct Tip { const char* name; const char* text; };
 const Tip kTips[29] = {
     { "seed size",     "Length of each grain. Short is gritty, long is smooth and recognisable." },
     { "rain",          "How many grains fall per second. More makes a thicker, denser cloud." },
-    { "pitch",         "Transposes every grain up or down, in semitones." },
+    { "speed",         "How fast the playhead travels through each sample. 1x is normal; pitch stays put." },
     { "wind",          "Mixes in a looping wind texture underneath the grains." },
     { "scatter",       "How far grains stray from the playhead. Low is focused, high is wide." },
     { "bloom",         "Seconds each sample plays before the next one, when no key is held." },
@@ -372,7 +372,7 @@ ScattrPanel::ScattrPanel (ScattrProcessor& p) : proc (p)
     struct Def { const char* id; const char* text; int dp; };
     // dp = digits shown under the knob (whole numbers for big ranges, 0.00 style for the small ones)
     static const Def defs[22] = {
-        { "size", "seed size", 0 }, { "dens", "rain", 0 }, { "pitch", "pitch", 2 },
+        { "size", "seed size", 0 }, { "dens", "rain", 0 }, { "speed", "speed", 2 },
         { "wind", "wind", 2 }, { "spray", "scatter", 2 }, { "hold", "bloom", 2 },
         { "gap", "rest", 2 }, { "amp", "sun", 2 },
         { "cutoff", "cutoff", 0 }, { "reso", "reso", 2 }, { "drive", "drive", 2 },
@@ -406,7 +406,8 @@ ScattrPanel::ScattrPanel (ScattrProcessor& p) : proc (p)
         }
         else
         {
-            k.slider.textFromValueFunction = [dp] (double v) { return juce::String (v, dp); };
+            const bool isSpeed = juce::String (defs[i].id) == "speed";
+            k.slider.textFromValueFunction = [dp, isSpeed] (double v) { return juce::String (v, dp) + (isSpeed ? "x" : ""); };
             k.slider.valueFromTextFunction = [] (const juce::String& t) { return t.retainCharacters ("-0123456789.").getDoubleValue(); };
         }
         k.slider.updateText();
@@ -609,7 +610,7 @@ void ScattrPanel::resized()
 
     // grains tab: two roomy rows
     {
-        static const size_t row1[7] = { 0, 1, 2, 3, 4, 21, 17 };  // seed size, rain, pitch, wind, scatter, pan spread, master tune
+        static const size_t row1[7] = { 0, 1, 2, 3, 4, 21, 17 };  // seed size, rain, speed, wind, scatter, pan spread, master tune
         static const size_t row2[5] = { 5, 6, 18, 19, 7 };        // bloom, rest, cycle, random, sun
         for (int k = 0; k < 7; ++k) place (row1[k], grainPanel(), 7, k, 88);
         for (int k = 0; k < 5; ++k) place (row2[k], motionPanel(), 7, k, 88);
@@ -1098,7 +1099,7 @@ void ScattrPanel::paintAtmosphere (juce::Graphics& g)
 void ScattrPanel::paintTitleGlow (juce::Graphics& g)
 {
     const float twoPi = juce::MathConstants<float>::twoPi;
-    g.setFont (serif (38.f));
+    g.setFont (titleFont (42.f));
     for (int layer = 0; layer < 3; ++layer)
     {
         const float rr = 6.f - 2.f * (float) layer;   // 6, 4, 2 px
@@ -1106,7 +1107,7 @@ void ScattrPanel::paintTitleGlow (juce::Graphics& g)
         for (int k = 0; k < 12; ++k)
         {
             const float ang = (float) k * twoPi / 12.f;
-            g.drawText ("P O L L E N", juce::roundToInt (18.f + std::cos (ang) * rr), juce::roundToInt (14.f + std::sin (ang) * rr),
+            g.drawText ("Nature", juce::roundToInt (18.f + std::cos (ang) * rr), juce::roundToInt (14.f + std::sin (ang) * rr),
                         300, 50, juce::Justification::centredLeft);
         }
     }
@@ -1509,11 +1510,11 @@ void ScattrPanel::paintGlints (juce::Graphics& g)
 void ScattrPanel::paintLabels (juce::Graphics& g)
 {
     // title: soft shadow, then letters that warm from ivory to the highlight colour (the glow is in the cache)
-    g.setFont (serif (38.f));
-    g.setColour (juce::Colours::black.withAlpha (0.55f));
-    g.drawText ("P O L L E N", 19, 16, 300, 50, juce::Justification::centredLeft);
+    g.setFont (titleFont (42.f));
+    g.setColour (juce::Colours::black.withAlpha (0.45f));
+    g.drawText ("Nature", 19, 16, 300, 50, juce::Justification::centredLeft);
     g.setGradientFill (juce::ColourGradient (pal.ink, 0.f, 18.f, pal.ink.interpolatedWith (pal.amber, 0.55f), 0.f, 60.f, false));
-    g.drawText ("P O L L E N", 18, 14, 300, 50, juce::Justification::centredLeft);
+    g.drawText ("Nature", 18, 14, 300, 50, juce::Justification::centredLeft);
 
     if (tab == 0)
     {
