@@ -65,6 +65,31 @@ juce::AudioProcessorValueTreeState::ParameterLayout makeLayout()
     p.push_back (std::make_unique<juce::AudioParameterBool> (
         juce::ParameterID { "tune", 1 }, "Tune Samples", true));
 
+    // spectral compressor (the pop-out window). Off by default.
+    p.push_back (std::make_unique<juce::AudioParameterBool> (juce::ParameterID { "son", 1 }, "Spectral On", false));
+    add ("smix",     "Spectral Mix",         0.f,   1.f,    1.f,   1.f);
+    add ("sgain",    "Spectral Output",     -24.f,  24.f,   0.f,   1.f);
+    add ("sthr",     "Spectral Threshold",  -90.f,  0.f,   -42.f,  1.f);
+    {   // centre of the threshold tilt: 1 kHz sits in the middle of the knob
+        NR r (20.f, 20000.f);
+        r.setSkewForCentre (1000.f);
+        p.push_back (std::make_unique<juce::AudioParameterFloat> (juce::ParameterID { "scen", 1 }, "Spectral Center", r, 1000.f));
+    }
+    add ("sslope",   "Spectral Slope",      -6.f,   6.f,   -3.f,   1.f);
+    add ("scurve",   "Spectral Curve",      -3.f,   3.f,    0.f,   1.f);
+    {   // ratios: 4:1 in the middle of the knob
+        NR r (1.f, 20.f);
+        r.setSkewForCentre (4.f);
+        p.push_back (std::make_unique<juce::AudioParameterFloat> (juce::ParameterID { "sratio", 1 },   "Spectral Down Ratio", r, 3.f));
+        p.push_back (std::make_unique<juce::AudioParameterFloat> (juce::ParameterID { "supratio", 1 }, "Spectral Up Ratio",   r, 1.f));
+    }
+    add ("supoff",   "Spectral Up Offset",   0.f,   48.f,   12.f,  1.f);
+    add ("sknee",    "Spectral Knee",        0.f,   24.f,    6.f,  1.f);
+    add ("satk",     "Spectral Attack",      1.f,   250.f,  10.f,  0.4f);
+    add ("srel",     "Spectral Release",     10.f,  2000.f, 150.f, 0.4f);
+    p.push_back (std::make_unique<juce::AudioParameterChoice> (
+        juce::ParameterID { "swin", 1 }, "Spectral Window", juce::StringArray { "512", "1024", "2048", "4096" }, 2));
+
     return { p.begin(), p.end() };
 }
 
@@ -248,6 +273,11 @@ void ScattrProcessor::prepareToPlay (double sampleRate, int samplesPerBlock)
     texLevel = 0.f;
     cutoffSm.reset (sampleRate, 0.03);
     cutoffSm.setCurrentAndTargetValue (20000.f);
+
+    spec.prepare (sampleRate);
+    reportedLatency = 0;
+    pendingLatency = 0;
+    setLatencySamples (0);
 
     for (auto& g : grains) g.active = false;
     phase = Phase::Gap;
@@ -742,6 +772,36 @@ void ScattrProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::Midi
         reverb.reset();
         for (auto& b : preBuf) std::fill (b.begin(), b.end(), 0.f);
         revActive = false;
+    }
+
+    // spectral compressor: the last stage, so it shapes everything the plugin makes
+    {
+        SpectralCompressor::Params sp;
+        sp.mix        = prm ("smix");
+        sp.outGainDb  = prm ("sgain");
+        sp.thrDb      = prm ("sthr");
+        sp.centerHz   = prm ("scen");
+        sp.slope      = prm ("sslope");
+        sp.curve      = prm ("scurve");
+        sp.downRatio  = prm ("sratio");
+        sp.upRatio    = prm ("supratio");
+        sp.upOffsetDb = prm ("supoff");
+        sp.kneeDb     = prm ("sknee");
+        sp.attackMs   = prm ("satk");
+        sp.releaseMs  = prm ("srel");
+        sp.order      = SpectralCompressor::minOrder + juce::jlimit (0, 3, (int) prm ("swin"));
+        const bool sOn = prm ("son") > 0.5f;
+
+        spec.process (L, R, numSamples, sp, sOn);
+
+        // the processed signal is delayed by one window: tell the host (only while the effect is on)
+        const int want = sOn ? (1 << sp.order) : 0;
+        if (want != reportedLatency)
+        {
+            reportedLatency = want;
+            pendingLatency = want;
+            triggerAsyncUpdate();
+        }
     }
 
     // feed the header equalizer with the finished (post-effects) mono signal

@@ -110,6 +110,36 @@ struct ScattrLNF : public juce::LookAndFeel_V4
     juce::Font getLabelFont (juce::Label&) override { return Scat::serif (13.f); }
 };
 
+// The knob that opens the spectral compressor. It looks like every other knob and shows whether the effect is
+// on ("on" / "off" underneath), but turning it does nothing: a click opens the window.
+struct SpectralKnob : public juce::Slider
+{
+    SpectralKnob()
+    {
+        setSliderStyle (juce::Slider::RotaryHorizontalVerticalDrag);
+        setTextBoxStyle (juce::Slider::TextBoxBelow, true, 64, 16);
+        setRotaryParameters (juce::MathConstants<float>::pi * 1.25f, juce::MathConstants<float>::pi * 2.75f, true);
+        setRange (0.0, 1.0, 0.0);
+        setMouseCursor (juce::MouseCursor::PointingHandCursor);
+        textFromValueFunction = [] (double v) { return juce::String (v > 0.5 ? "on" : "off"); };
+        updateText();
+    }
+
+    std::function<void()> onOpen;
+
+    void mouseDown (const juce::MouseEvent&) override {}
+    void mouseDrag (const juce::MouseEvent&) override {}
+    void mouseDoubleClick (const juce::MouseEvent&) override {}
+    void mouseWheelMove (const juce::MouseEvent&, const juce::MouseWheelDetails&) override {}
+    void mouseUp (const juce::MouseEvent& e) override
+    {
+        if (! e.mouseWasDraggedSinceMouseDown() && getLocalBounds().contains (e.getEventRelativeTo (this).getPosition()) && onOpen)
+            onOpen();
+    }
+};
+
+class SpectralOverlay;
+
 // ---------------------------------------------------------------------------------------------
 // The whole UI lives in this panel, drawn at a fixed 780 x 570 design size.
 // The editor window scales it with a transform and resizes itself to match, so the zoom level is
@@ -136,11 +166,14 @@ public:
     void mouseDoubleClick (const juce::MouseEvent&) override;
     void mouseWheelMove (const juce::MouseEvent&, const juce::MouseWheelDetails&) override;
 
-    bool isInterestedInFileDrag (const juce::StringArray&) override { return true; }
+    bool isInterestedInFileDrag (const juce::StringArray&) override;
     void filesDropped (const juce::StringArray& files, int, int) override;
 
 private:
+    friend class SpectralOverlay;
+
     void timerCallback() override;
+    void openSpectral();             // snapshot + blur everything, then raise the spectral compressor window
     void applyTheme (int idx, bool animate = true);
     void showSampleMenu (int idx);   // right-click menu on a sample: mute / remove
     void setTab (int t);
@@ -178,7 +211,9 @@ private:
     juce::Rectangle<float> motionPanel() const { return { 18.f, 384.f, 744.f, 130.f }; }
     juce::Rectangle<float> fxPanel (int k) const { return { 18.f, 80.f + (float) k * 144.f, 744.f, 136.f }; }
     juce::Rectangle<float> waveInner() const  { return waveRect().reduced (10.f, 0.f); }
-    juce::Rectangle<float> eqRect() const     { return { 186.f, 20.f, 94.f, 42.f }; }   // sits right beside the title
+    juce::Rectangle<float> eqRect() const     { return { 506.f, 20.f, 88.f, 42.f }; }   // top right, beside the theme / zoom buttons
+    float titleX() const;     // the title and its sprout are centred as one group in the header
+    float sproutX() const;
     int hitHandle (float x) const;   // 0 = none, 1 = start bar, 2 = end bar (for the shown sample)
 
     static constexpr int rowH = 20, maxRows = 5, listTop = 34;
@@ -213,6 +248,9 @@ private:
     std::unique_ptr<juce::AudioProcessorValueTreeState::ButtonAttachment> droneAttach;
     juce::ToggleButton tuneBtn { "TUNE" };
     std::unique_ptr<juce::AudioProcessorValueTreeState::ButtonAttachment> tuneAttach;
+    SpectralKnob specKnob;
+    juce::Label specLabel;
+    std::unique_ptr<SpectralOverlay> spectral;   // the pop-out window (hidden until the knob is clicked)
     std::unique_ptr<juce::FileChooser> chooser;
 
     // cached static layer (2x design size so it stays sharp at 200 %)
@@ -244,6 +282,72 @@ private:
     bool playing = false, shownPlaying = false;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (ScattrPanel)
+};
+
+// ---------------------------------------------------------------------------------------------
+// The spectral compressor window. It covers the whole panel (so nothing behind it can be touched), paints a
+// blurred, dimmed snapshot of the plugin as its backdrop, and floats one glass card on top.
+// ---------------------------------------------------------------------------------------------
+class SpectralOverlay : public juce::Component,
+                        private juce::Timer
+{
+public:
+    SpectralOverlay (ScattrPanel&, ScattrProcessor&);
+    ~SpectralOverlay() override;
+
+    void open (const juce::Image& snapshot);   // snapshot = the panel as it looks right now
+    void close();
+
+    void paint (juce::Graphics&) override;
+    void resized() override;
+    void mouseDown (const juce::MouseEvent&) override;
+    void mouseWheelMove (const juce::MouseEvent&, const juce::MouseWheelDetails&) override {}   // never scroll the panel behind
+    bool keyPressed (const juce::KeyPress&) override;
+
+private:
+    void timerCallback() override;
+    void buildLayers();                     // renders the backdrop and the card once per opening
+    void paintCardStatic (juce::Graphics&); // card, header, group panels, analyzer shell and grid
+    void paintAnalyzerShell (juce::Graphics&);   // glass, grid, labels, legend (static)
+    void paintAnalyzerLive (juce::Graphics&);
+    void paintKnobGlows (juce::Graphics&);
+    SpectralCompressor::Params readParams() const;
+    juce::Rectangle<float> plotRect() const { return analyzer().reduced (12.f, 12.f).withTrimmedBottom (34.f).withTrimmedLeft (18.f); }
+
+    juce::Rectangle<float> card() const      { return { 14.f, 40.f, 752.f, 490.f }; }
+    juce::Rectangle<float> group (int row) const { return { 26.f, 98.f + (float) row * 138.f, 400.f, 130.f }; }
+    juce::Rectangle<float> analyzer() const  { return { 438.f, 98.f, 316.f, 406.f }; }
+
+    struct Knob
+    {
+        juce::Slider slider;
+        juce::Label label;
+        std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> attach;
+    };
+
+    static constexpr int numKnobs = 12;
+
+    ScattrPanel& panel;
+    ScattrProcessor& proc;
+
+    std::array<Knob, (size_t) numKnobs> knobs;
+    juce::ToggleButton onBtn { "ON" };
+    std::unique_ptr<juce::AudioProcessorValueTreeState::ButtonAttachment> onAttach;
+    juce::TextButton winBtn { "WINDOW" }, doneBtn { "DONE" };
+
+    juce::Image sharp, backdrop, cardImg;   // live snapshot (only used while fading in), then two cached layers
+    static constexpr float layerScale = 2.f;
+    float progress = 0.f;      // 0..1 open animation
+    bool closing = false;
+    float anim = 0.f;
+    double lastMs = 0.0;
+
+    std::array<float, (size_t) SpectralCompressor::numBands> shIn {}, shOut {};
+    unsigned lastFrames = 0;
+    int stale = 0;
+    bool live = false;
+
+    JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (SpectralOverlay)
 };
 
 // Thin plugin window: just hosts the panel at the saved zoom.

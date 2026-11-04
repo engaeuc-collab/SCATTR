@@ -125,6 +125,19 @@ inline float smooth01 (float t)
     return t * t * (3.f - 2.f * t);
 }
 
+// Width of the "Nature" title at its drawn size, so the title and the sprout beside it can be centred as one group.
+float titleWidth()
+{
+    static const float w = []
+    {
+        juce::GlyphArrangement ga;
+        ga.addLineOfText (Scat::titleFont (50.f), "Nature", 0.f, 0.f);
+        return ga.getBoundingBox (0, -1, true).getWidth();
+    }();
+    return w;
+}
+constexpr float sproutGap = 24.f, sproutHalf = 15.f;   // title -> sprout stem, and how far the sprout reaches right of its stem
+
 // How "on" a toggle looks, 0..1. The panel glides this for the on/off buttons (the "lit" property, 0.2 s);
 // every other button simply follows its toggle state.
 inline float buttonLit (const juce::Button& b)
@@ -135,9 +148,9 @@ inline float buttonLit (const juce::Button& b)
 }
 
 // Hover notes. The index order matches ScattrPanel::hoveredControl(): the 22 knobs (same order as the
-// `knobs` array), then DRIFT, TUNE, filter mode, reverb space and the three on/off buttons.
+// `knobs` array), then DRIFT, TUNE, filter mode, reverb space and the three on/off buttons, then the spectral knob.
 struct Tip { const char* name; const char* text; };
-const Tip kTips[29] = {
+const Tip kTips[30] = {
     { "seed size",     "Length of each grain. Short is gritty, long is smooth and recognisable." },
     { "rain",          "How many grains fall per second. More makes a thicker, denser cloud." },
     { "speed",         "How fast the playhead travels through each sample. 1x is normal; pitch stays put." },
@@ -166,7 +179,8 @@ const Tip kTips[29] = {
     { "reverb space",  "Click to cycle between room, plate, hall and cathedral." },
     { "filter",        "Turns the filter on or off." },
     { "echo",          "Turns the echo on or off." },
-    { "reverb",        "Turns the reverb on or off." }
+    { "reverb",        "Turns the reverb on or off." },
+    { "spectral",      "Opens the spectral compressor, which evens out each frequency on its own." }
 };
 
 // A raised, glossy key. `lit` (0..1) is how switched-on it looks: the body, glow and rim fade between the two
@@ -503,6 +517,18 @@ ScattrPanel::ScattrPanel (ScattrProcessor& p) : proc (p)
     addAndMakeVisible (tuneBtn);
     tuneAttach = std::make_unique<juce::AudioProcessorValueTreeState::ButtonAttachment> (proc.apvts, "tune", tuneBtn);
 
+    addAndMakeVisible (specKnob);
+    specKnob.onOpen = [this] { openSpectral(); };
+    specLabel.setText ("spectral", juce::dontSendNotification);
+    specLabel.setJustificationType (juce::Justification::centred);
+    specLabel.setFont (serif (14.f, true));
+    addAndMakeVisible (specLabel);
+
+    // the pop-out window goes in last so it sits above everything else
+    spectral = std::make_unique<SpectralOverlay> (*this, proc);
+    addChildComponent (*spectral);
+    spectral->setBounds (getLocalBounds());
+
     loadBtn.onClick = [this]
     {
         chooser = std::make_unique<juce::FileChooser> ("Select samples", juce::File(),
@@ -583,6 +609,8 @@ void ScattrPanel::setTab (int t)
     clearBtn.setVisible (g);
     droneBtn.setVisible (g);
     tuneBtn.setVisible (g);
+    specKnob.setVisible (g);
+    specLabel.setVisible (g);
     tabBtn[(size_t) t].setToggleState (true, juce::dontSendNotification);
     repaint();
 }
@@ -590,10 +618,12 @@ void ScattrPanel::setTab (int t)
 void ScattrPanel::resized()
 {
     // header
-    tabBtn[0].setBounds (360, 22, 100, 34);
-    tabBtn[1].setBounds (466, 22, 100, 34);
-    themeBtn.setBounds (594, 26, 80, 26);
+    tabBtn[0].setBounds (18, 22, 88, 34);
+    tabBtn[1].setBounds (112, 22, 88, 34);
+    themeBtn.setBounds (600, 26, 76, 26);
     scaleBtn.setBounds (682, 26, 80, 26);
+
+    if (spectral != nullptr) spectral->setBounds (getLocalBounds());
 
     // sample panel buttons
     const auto sp = sampleRect();
@@ -620,6 +650,11 @@ void ScattrPanel::resized()
         const int bx = (int) mp.getX() + 12 + 4 * sw + (sw - 80) / 2;
         droneBtn.setBounds (bx, (int) mp.getY() + 40, 80, 28);
         tuneBtn.setBounds  (bx, (int) mp.getY() + 78, 80, 28);
+
+        // the spectral compressor knob sits in the next free column of the motion row
+        const int sx = (int) mp.getX() + 12 + 5 * sw;
+        specLabel.setBounds (sx, (int) mp.getY() + 22, sw, 16);
+        specKnob.setBounds  (sx, (int) mp.getY() + 38, sw, 88);
     }
 
     // fx tab: one row per effect, shared 5-column grid
@@ -643,6 +678,7 @@ void ScattrPanel::resized()
 
 void ScattrPanel::filesDropped (const juce::StringArray& files, int, int)
 {
+    if (spectral != nullptr && spectral->isVisible()) return;
     for (auto& f : files) proc.addSampleFile (juce::File (f));
     repaint();
 }
@@ -657,6 +693,28 @@ int ScattrPanel::hitHandle (float x) const
     if (juce::jmin (ds, de) > 12.f) return 0;
     if (ds == de) return x < in.getX() + s.startN.load() * in.getWidth() ? 1 : 2;
     return ds < de ? 1 : 2;
+}
+
+// "Nature" and its sprout sit together in the middle of the header
+float ScattrPanel::titleX() const  { return (float) baseW * 0.5f - (titleWidth() + sproutGap + sproutHalf) * 0.5f; }
+float ScattrPanel::sproutX() const { return titleX() + titleWidth() + sproutGap; }
+
+bool ScattrPanel::isInterestedInFileDrag (const juce::StringArray&)
+{
+    return spectral == nullptr || ! spectral->isVisible();   // nothing behind the spectral window may be dropped on
+}
+
+void ScattrPanel::openSpectral()
+{
+    if (spectral == nullptr || spectral->isVisible()) return;
+
+    // Hover notes belong to the controls that are about to be covered
+    hoverId = tipId = -1;
+    tipAlpha = 0.f;
+
+    // Grab the panel as it looks right now (before the window is shown), at the current zoom so it stays sharp
+    const float s = juce::jmax (1.f, proc.editorScale.load());
+    spectral->open (createComponentSnapshot (getLocalBounds(), true, s));
 }
 
 void ScattrPanel::showSampleMenu (int idx)
@@ -820,6 +878,8 @@ void ScattrPanel::timerCallback()
         if (show) tipId = hoverId;
         tipAlpha = juce::jlimit (0.f, 1.f, tipAlpha + (show ? 1.f : -1.f) * dt / 0.12f);
     }
+
+    specKnob.setValue (proc.apvts.getRawParameterValue ("son")->load() > 0.5f ? 1.0 : 0.0, juce::dontSendNotification);
 
     updateEq();
 
@@ -1107,7 +1167,7 @@ void ScattrPanel::paintTitleGlow (juce::Graphics& g)
         for (int k = 0; k < 12; ++k)
         {
             const float ang = (float) k * twoPi / 12.f;
-            g.drawText ("Nature", juce::roundToInt (18.f + std::cos (ang) * rr), juce::roundToInt (14.f + std::sin (ang) * rr),
+            g.drawText ("Nature", juce::roundToInt (titleX() + std::cos (ang) * rr), juce::roundToInt (14.f + std::sin (ang) * rr),
                         300, 50, juce::Justification::centredLeft);
         }
     }
@@ -1512,9 +1572,9 @@ void ScattrPanel::paintLabels (juce::Graphics& g)
     // title: soft shadow, then letters that warm from ivory to the highlight colour (the glow is in the cache)
     g.setFont (titleFont (50.f));
     g.setColour (juce::Colours::black.withAlpha (0.45f));
-    g.drawText ("Nature", 19, 16, 300, 50, juce::Justification::centredLeft);
+    g.drawText ("Nature", juce::roundToInt (titleX() + 1.f), 16, 300, 50, juce::Justification::centredLeft);
     g.setGradientFill (juce::ColourGradient (pal.ink, 0.f, 18.f, pal.ink.interpolatedWith (pal.amber, 0.55f), 0.f, 60.f, false));
-    g.drawText ("Nature", 18, 14, 300, 50, juce::Justification::centredLeft);
+    g.drawText ("Nature", juce::roundToInt (titleX()), 14, 300, 50, juce::Justification::centredLeft);
 
     if (tab == 0)
     {
@@ -1640,9 +1700,13 @@ void ScattrPanel::paintKnobGlows (juce::Graphics& g)
 {
     const float a0 = juce::MathConstants<float>::pi * 1.25f, a1 = juce::MathConstants<float>::pi * 2.75f;
 
-    for (auto& k : knobs)
+    std::array<juce::Slider*, 23> all {};
+    for (size_t i = 0; i < knobs.size(); ++i) all[i] = &knobs[i].slider;
+    all[22] = &specKnob;
+
+    for (auto* sp : all)
     {
-        auto& s = k.slider;
+        auto& s = *sp;
         if (! s.isVisible()) continue;
 
         const float al = s.getAlpha();
@@ -1696,9 +1760,14 @@ void ScattrPanel::paintToggleGlows (juce::Graphics& g)
 
 int ScattrPanel::hoveredControl() const
 {
+    if (spectral != nullptr && spectral->isVisible()) return -1;
+
     for (size_t i = 0; i < knobs.size(); ++i)
         if (knobs[i].slider.isVisible() && (knobs[i].slider.isMouseOver (true) || knobs[i].label.isMouseOver (false)))
             return (int) i;
+
+    if (specKnob.isVisible() && (specKnob.isMouseOver (true) || specLabel.isMouseOver (false)))
+        return 29;
 
     const juce::Component* extra[7] = { &droneBtn, &tuneBtn, &typeBtn, &spaceBtn, &fonBtn, &donBtn, &ronBtn };
     for (int k = 0; k < 7; ++k)
@@ -1711,7 +1780,7 @@ int ScattrPanel::hoveredControl() const
 // A small field note that rises into the footer, clear of every control
 void ScattrPanel::paintTip (juce::Graphics& g)
 {
-    if (tipAlpha < 0.01f || tipId < 0 || tipId >= 29) return;
+    if (tipAlpha < 0.01f || tipId < 0 || tipId >= 30) return;
 
     const float a = smooth01 (tipAlpha);
     const auto black = juce::Colours::black;
@@ -1762,12 +1831,12 @@ void ScattrPanel::paint (juce::Graphics& g)
 
     // little sprout beside the title
     {
-        const float sw = 0.08f * std::sin (anim * 0.9f);
-        drawLeaf (g, 302.f, 52.f, 0.7f + sw, 20.f, pal.grassDark.brighter (0.2f));
-        drawLeaf (g, 302.f, 52.f, -0.5f + sw, 16.f, pal.grass.darker (0.3f));
-        drawLeaf (g, 302.f, 52.f, 0.1f + sw, 26.f, pal.grass);
+        const float sw = 0.08f * std::sin (anim * 0.9f), bx = sproutX();
+        drawLeaf (g, bx, 52.f, 0.7f + sw, 20.f, pal.grassDark.brighter (0.2f));
+        drawLeaf (g, bx, 52.f, -0.5f + sw, 16.f, pal.grass.darker (0.3f));
+        drawLeaf (g, bx, 52.f, 0.1f + sw, 26.f, pal.grass);
 
-        const float fx = 302.f + std::sin (0.1f + sw) * 28.f, fy = 52.f - 28.f;
+        const float fx = bx + std::sin (0.1f + sw) * 28.f, fy = 52.f - 28.f;
         g.setGradientFill (juce::ColourGradient (pal.glow.withAlpha (0.6f), fx, fy, pal.glow.withAlpha (0.f), fx + 18.f, fy, true));
         g.fillEllipse (fx - 18.f, fy - 18.f, 36.f, 36.f);
         drawFlower (g, fx, fy, 5.5f, pal.acc, pal.amber);
@@ -1786,6 +1855,546 @@ void ScattrPanel::paint (juce::Graphics& g)
 
     drawVine (g);   // lives in its own footer strip, clear of every control
     paintTip (g);
+}
+
+// ---------------------------------------------------------------- spectral compressor window
+
+namespace
+{
+// A cheap, soft blur: shrink the snapshot, run a few box-blur passes on the small copy, and let the
+// resampler smooth it back up when it is drawn. Done once per opening, so cost is irrelevant.
+juce::Image blurSnapshot (const juce::Image& src, int w, int h, int radius, int passes)
+{
+    juce::Image img = src.rescaled (w, h, juce::Graphics::highResamplingQuality).convertedToFormat (juce::Image::RGB);
+    img.duplicateIfShared();
+
+    std::vector<float> a ((size_t) w * (size_t) h * 3u), b (a.size());
+    {
+        juce::Image::BitmapData bd (img, juce::Image::BitmapData::readOnly);
+        for (int y = 0; y < h; ++y)
+            for (int x = 0; x < w; ++x)
+            {
+                const auto* px = bd.getPixelPointer (x, y);
+                for (int ch = 0; ch < 3; ++ch) a[((size_t) y * (size_t) w + (size_t) x) * 3u + (size_t) ch] = (float) px[ch];
+            }
+    }
+
+    const float inv = 1.f / (float) (2 * radius + 1);
+    for (int pass = 0; pass < passes; ++pass)
+    {
+        for (int y = 0; y < h; ++y)
+            for (int x = 0; x < w; ++x)
+                for (int ch = 0; ch < 3; ++ch)
+                {
+                    float s = 0.f;
+                    for (int d = -radius; d <= radius; ++d)
+                        s += a[((size_t) y * (size_t) w + (size_t) juce::jlimit (0, w - 1, x + d)) * 3u + (size_t) ch];
+                    b[((size_t) y * (size_t) w + (size_t) x) * 3u + (size_t) ch] = s * inv;
+                }
+        for (int y = 0; y < h; ++y)
+            for (int x = 0; x < w; ++x)
+                for (int ch = 0; ch < 3; ++ch)
+                {
+                    float s = 0.f;
+                    for (int d = -radius; d <= radius; ++d)
+                        s += b[((size_t) juce::jlimit (0, h - 1, y + d) * (size_t) w + (size_t) x) * 3u + (size_t) ch];
+                    a[((size_t) y * (size_t) w + (size_t) x) * 3u + (size_t) ch] = s * inv;
+                }
+    }
+
+    {
+        juce::Image::BitmapData bd (img, juce::Image::BitmapData::writeOnly);
+        for (int y = 0; y < h; ++y)
+            for (int x = 0; x < w; ++x)
+            {
+                auto* px = bd.getPixelPointer (x, y);
+                for (int ch = 0; ch < 3; ++ch)
+                    px[ch] = (juce::uint8) juce::jlimit (0, 255, juce::roundToInt (a[((size_t) y * (size_t) w + (size_t) x) * 3u + (size_t) ch]));
+            }
+    }
+    return img;
+}
+
+// readouts for the window's knobs
+double plainNumber (const juce::String& t) { return t.retainCharacters ("-0123456789.").getDoubleValue(); }
+
+struct SpecDef
+{
+    const char* id;
+    const char* text;
+    juce::String (*show) (double);
+    double (*read) (const juce::String&);
+};
+
+const SpecDef kSpecDefs[12] = {
+    // globals
+    { "smix",   "mix",        [] (double v) { return juce::String (juce::roundToInt ((float) (v * 100.0))) + "%"; },
+                              [] (const juce::String& t) { return plainNumber (t) / 100.0; } },
+    { "sgain",  "output",     [] (double v) { return juce::String (v, 1) + " dB"; },  plainNumber },
+    { "satk",   "attack",     [] (double v) { return juce::String (v, 1) + " ms"; },  plainNumber },
+    { "srel",   "release",    [] (double v) { return v >= 1000.0 ? juce::String (v / 1000.0, 2) + " s" : juce::String (juce::roundToInt ((float) v)) + " ms"; },
+                              [] (const juce::String& t) { const double n = plainNumber (t); return (t.containsIgnoreCase ("s") && ! t.containsIgnoreCase ("ms")) ? n * 1000.0 : n; } },
+    // threshold
+    { "sthr",   "threshold",  [] (double v) { return juce::String (v, 1) + " dB"; },  plainNumber },
+    { "scen",   "center",     [] (double v) { return v >= 1000.0 ? juce::String (v / 1000.0, 2) + " kHz" : juce::String (juce::roundToInt ((float) v)) + " Hz"; },
+                              [] (const juce::String& t) { const double n = plainNumber (t); return t.containsIgnoreCase ("k") ? n * 1000.0 : n; } },
+    { "sslope", "slope",      [] (double v) { return juce::String (v, 2) + " dB/oct"; }, plainNumber },
+    { "scurve", "curve",      [] (double v) { return juce::String (v, 2) + " dB/oct" + juce::String (juce::CharPointer_UTF8 ("\xc2\xb2")); }, plainNumber },
+    // dynamics
+    { "sratio",   "down ratio", [] (double v) { return juce::String (v, 1) + ":1"; }, plainNumber },
+    { "supratio", "up ratio",   [] (double v) { return juce::String (v, 1) + ":1"; }, plainNumber },
+    { "supoff",   "up offset",  [] (double v) { return juce::String (v, 1) + " dB"; }, plainNumber },
+    { "sknee",    "knee",       [] (double v) { return juce::String (v, 1) + " dB"; }, plainNumber }
+};
+
+constexpr float kFloorDb = -100.f;   // bottom of the analyzer
+}
+
+SpectralOverlay::SpectralOverlay (ScattrPanel& p, ScattrProcessor& pr) : panel (p), proc (pr)
+{
+    setOpaque (true);                 // the window paints every pixel, so the panel underneath need not repaint
+    setWantsKeyboardFocus (true);
+    setVisible (false);
+
+    for (size_t i = 0; i < knobs.size(); ++i)
+    {
+        auto& k = knobs[i];
+        const auto& d = kSpecDefs[i];
+
+        k.slider.setSliderStyle (juce::Slider::RotaryHorizontalVerticalDrag);
+        k.slider.setTextBoxStyle (juce::Slider::TextBoxBelow, false, 90, 16);
+        k.slider.setRotaryParameters (juce::MathConstants<float>::pi * 1.25f, juce::MathConstants<float>::pi * 2.75f, true);
+        addAndMakeVisible (k.slider);
+        k.attach = std::make_unique<juce::AudioProcessorValueTreeState::SliderAttachment> (proc.apvts, d.id, k.slider);
+        k.slider.textFromValueFunction = d.show;
+        k.slider.valueFromTextFunction = d.read;
+        k.slider.updateText();
+
+        k.label.setText (d.text, juce::dontSendNotification);
+        k.label.setJustificationType (juce::Justification::centred);
+        k.label.setFont (Scat::serif (14.f, true));
+        addAndMakeVisible (k.label);
+    }
+
+    addAndMakeVisible (onBtn);
+    onAttach = std::make_unique<juce::AudioProcessorValueTreeState::ButtonAttachment> (proc.apvts, "son", onBtn);
+
+    addAndMakeVisible (winBtn);
+    winBtn.onClick = [this]
+    {
+        auto* par = proc.apvts.getParameter ("swin");
+        const int cur = (int) proc.apvts.getRawParameterValue ("swin")->load();
+        par->beginChangeGesture();
+        par->setValueNotifyingHost (par->convertTo0to1 ((float) ((cur + 1) % 4)));
+        par->endChangeGesture();
+    };
+
+    addAndMakeVisible (doneBtn);
+    doneBtn.onClick = [this] { close(); };
+
+    for (auto& v : shIn)  v = kFloorDb;
+    for (auto& v : shOut) v = kFloorDb;
+}
+
+SpectralOverlay::~SpectralOverlay()
+{
+    stopTimer();
+}
+
+void SpectralOverlay::open (const juce::Image& snapshot)
+{
+    sharp = snapshot;
+    buildLayers();
+
+    progress = 0.f;
+    closing = false;
+    lastMs = juce::Time::getMillisecondCounterHiRes();
+    stale = 100;
+    for (auto& v : shIn)  v = kFloorDb;
+    for (auto& v : shOut) v = kFloorDb;
+
+    for (auto* c : getChildren()) c->setAlpha (0.f);
+    setBounds (panel.getLocalBounds());
+    setVisible (true);
+    toFront (false);
+    grabKeyboardFocus();
+    startTimerHz (45);
+}
+
+void SpectralOverlay::close()
+{
+    if (! isVisible() || closing) return;
+    closing = true;
+}
+
+bool SpectralOverlay::keyPressed (const juce::KeyPress& k)
+{
+    if (k == juce::KeyPress::escapeKey) { close(); return true; }
+    return true;   // swallow everything else so keys don't leak to the host while the window is up
+}
+
+void SpectralOverlay::mouseDown (const juce::MouseEvent& e)
+{
+    if (! card().contains (e.position)) close();   // click on the blurred backdrop = dismiss
+}
+
+void SpectralOverlay::resized()
+{
+    // knob grid: three rows of four, the same rhythm as the main panel
+    static const size_t order[12] = { 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11 };
+    for (int r = 0; r < 3; ++r)
+    {
+        const auto gr = group (r);
+        const int sw = (int) ((gr.getWidth() - 24.f) / 4.f);
+        for (int c = 0; c < 4; ++c)
+        {
+            auto& k = knobs[order[r * 4 + c]];
+            const int x = (int) gr.getX() + 12 + c * sw, y = (int) gr.getY();
+            k.label.setBounds (x, y + 22, sw, 16);
+            k.slider.setBounds (x, y + 38, sw, 88);
+        }
+    }
+
+    const auto cd = card();
+    doneBtn.setBounds ((int) cd.getRight() - 16 - 76, (int) cd.getY() + 12, 76, 30);
+    winBtn.setBounds  (doneBtn.getX() - 8 - 118, (int) cd.getY() + 12, 118, 30);
+    onBtn.setBounds   (winBtn.getX() - 8 - 64, (int) cd.getY() + 12, 64, 30);
+}
+
+SpectralCompressor::Params SpectralOverlay::readParams() const
+{
+    auto v = [this] (const char* id) { return proc.apvts.getRawParameterValue (id)->load(); };
+    SpectralCompressor::Params p;
+    p.mix = v ("smix");        p.outGainDb = v ("sgain");   p.thrDb = v ("sthr");      p.centerHz = v ("scen");
+    p.slope = v ("sslope");    p.curve = v ("scurve");      p.downRatio = v ("sratio"); p.upRatio = v ("supratio");
+    p.upOffsetDb = v ("supoff"); p.kneeDb = v ("sknee");    p.attackMs = v ("satk");    p.releaseMs = v ("srel");
+    return p;
+}
+
+void SpectralOverlay::timerCallback()
+{
+    const double nowMs = juce::Time::getMillisecondCounterHiRes();
+    const float dt = juce::jlimit (0.f, 0.1f, (float) ((nowMs - lastMs) * 0.001));
+    lastMs = nowMs;
+    anim += dt;
+
+    // fade the window in and out
+    const float before = progress;
+    progress = juce::jlimit (0.f, 1.f, progress + (closing ? -1.f : 1.f) * dt / 0.22f);
+    if (progress != before || progress < 1.f)
+    {
+        const float a = smooth01 (progress);
+        for (auto* c : getChildren()) c->setAlpha (a >= 0.999f ? 1.f : a);
+    }
+    if (closing && progress <= 0.f)
+    {
+        stopTimer();
+        closing = false;
+        setVisible (false);
+        sharp = {};
+        backdrop = {};
+        cardImg = {};
+        panel.repaint();
+        return;
+    }
+
+    // the ON button glides between its looks like the panel's buttons do
+    {
+        const float target = onBtn.getToggleState() ? 1.f : 0.f;
+        float v = buttonLit (onBtn);
+        const float step = dt / 0.2f;
+        v = v < target ? juce::jmin (target, v + step) : juce::jmax (target, v - step);
+        onBtn.getProperties().set ("lit", v);
+    }
+
+    static const char* wn[4] = { "512", "1024", "2048", "4096" };
+    const juce::String wt = juce::String ("WINDOW ") + wn[juce::jlimit (0, 3, (int) proc.apvts.getRawParameterValue ("swin")->load())];
+    if (winBtn.getButtonText() != wt) winBtn.setButtonText (wt);
+
+    // analyzer: follow the audio thread's frames; fall away when nothing is being processed
+    const unsigned f = proc.spec.frames.load (std::memory_order_acquire);
+    stale = (f == lastFrames) ? stale + 1 : 0;
+    lastFrames = f;
+    live = stale < 8 && proc.apvts.getRawParameterValue ("son")->load() > 0.5f;
+    for (size_t b = 0; b < shIn.size(); ++b)
+    {
+        const float ti = live ? juce::jlimit (kFloorDb, 6.f, proc.spec.dispIn[b].load (std::memory_order_relaxed))  : kFloorDb;
+        const float to = live ? juce::jlimit (kFloorDb, 6.f, proc.spec.dispOut[b].load (std::memory_order_relaxed)) : kFloorDb;
+        shIn[b]  += (ti - shIn[b])  * (ti > shIn[b]  ? 0.55f : 0.14f);
+        shOut[b] += (to - shOut[b]) * (to > shOut[b] ? 0.55f : 0.14f);
+    }
+
+    repaint();
+}
+
+// The soft bloom behind every knob in the window (a slider can't draw outside its own bounds)
+void SpectralOverlay::paintKnobGlows (juce::Graphics& g)
+{
+    const auto& pal = panel.pal;
+    const float a0 = juce::MathConstants<float>::pi * 1.25f, a1 = juce::MathConstants<float>::pi * 2.75f;
+
+    for (auto& k : knobs)
+    {
+        auto& s = k.slider;
+        const float pos = (float) s.valueToProportionOfLength (s.getValue());
+        const auto rb = s.getLookAndFeel().getSliderLayout (s).sliderBounds.toFloat();
+        const auto c = rb.getCentre() + s.getPosition().toFloat();
+        const float rad = (juce::jmin (rb.getWidth(), rb.getHeight()) - 2.f * Scat::knobPad) * 0.5f;
+        const bool hot = s.isMouseOverOrDragging();
+        const float breathe = 0.9f + 0.1f * std::sin (anim * 1.7f + c.x * 0.03f);
+
+        const float R = rad * 2.3f;
+        const float strength = (0.03f + 0.09f * pos + (hot ? 0.04f : 0.f)) * breathe;
+        juce::ColourGradient amb (pal.acc.withAlpha (strength), c.x, c.y, pal.acc.withAlpha (0.f), c.x + R, c.y, true);
+        amb.addColour (0.45, pal.acc.withAlpha (strength * 0.35f));
+        g.setGradientFill (amb);
+        g.fillEllipse (c.x - R, c.y - R, R * 2.f, R * 2.f);
+
+        if (pos > 0.001f)
+        {
+            const float ang = a0 + pos * (a1 - a0), ar = rad + 4.f;
+            const float bx = c.x + std::sin (ang) * ar, by = c.y - std::cos (ang) * ar;
+            const float br = hot ? 20.f : 16.f;
+            g.setGradientFill (juce::ColourGradient (pal.glow.withAlpha (0.26f), bx, by, pal.glow.withAlpha (0.f), bx + br, by, true));
+            g.fillEllipse (bx - br, by - br, br * 2.f, br * 2.f);
+        }
+    }
+}
+
+// The parts of the analyzer that never move: glass, grid, labels and legend
+void SpectralOverlay::paintAnalyzerShell (juce::Graphics& g)
+{
+    const auto& pal = panel.pal;
+    const auto an = analyzer(), plot = plotRect();
+    auto dbY = [&] (float db) { return plot.getY() + juce::jlimit (0.f, 1.f, -db / -kFloorDb) * plot.getHeight(); };
+    auto fx  = [&] (float hz) { return plot.getX() + std::log10 (hz / SpectralCompressor::fMinHz) / 3.f * plot.getWidth(); };
+
+    panel.drawGlass (g, an, 10.f, 0.70f, true);
+    g.setFont (Scat::serif (11.f));
+
+    for (int db = 0; db >= -80; db -= 20)
+    {
+        const float y = dbY ((float) db);
+        g.setColour (pal.line.withAlpha (db == 0 ? 0.55f : 0.30f));
+        g.drawHorizontalLine (juce::roundToInt (y), plot.getX(), plot.getRight());
+        g.setColour (pal.dim.withAlpha (0.8f));
+        g.drawText (juce::String (db), juce::Rectangle<float> (an.getX() + 2.f, y - 7.f, 26.f, 14.f), juce::Justification::centredLeft);
+    }
+    static const float tickHz[] = { 50.f, 100.f, 200.f, 500.f, 1000.f, 2000.f, 5000.f, 10000.f };
+    for (float hz : tickHz)
+    {
+        const float x = fx (hz);
+        const bool major = (hz == 100.f || hz == 1000.f || hz == 10000.f);
+        g.setColour (pal.line.withAlpha (major ? 0.45f : 0.22f));
+        g.drawVerticalLine (juce::roundToInt (x), plot.getY(), plot.getBottom());
+        if (major)
+        {
+            g.setColour (pal.dim.withAlpha (0.85f));
+            g.drawText (hz >= 1000.f ? juce::String ((int) (hz / 1000.f)) + "k" : juce::String ((int) hz),
+                        juce::Rectangle<float> (x - 16.f, plot.getBottom() + 2.f, 32.f, 14.f), juce::Justification::centred);
+        }
+    }
+
+    // legend
+    const float ly = an.getBottom() - 22.f;
+    g.setFont (Scat::serif (12.f, true));
+    float lx = plot.getX();
+    auto textW = [&] (const juce::String& t)
+    {
+        juce::GlyphArrangement ga;
+        ga.addLineOfText (g.getCurrentFont(), t, 0.f, 0.f);
+        return ga.getBoundingBox (0, -1, true).getWidth();
+    };
+    auto key = [&] (juce::Colour col, const juce::String& txt, bool line)
+    {
+        g.setColour (col);
+        if (line) g.fillRect (lx, ly + 6.f, 12.f, 2.f); else g.fillRoundedRectangle (lx, ly + 2.f, 10.f, 9.f, 2.f);
+        g.setColour (pal.dim);
+        g.drawText (txt, juce::Rectangle<float> (lx + 15.f, ly - 1.f, 80.f, 15.f), juce::Justification::centredLeft);
+        lx += 17.f + textW (txt) + 10.f;
+    };
+    key (pal.ink.withAlpha (0.55f), "in", false);
+    key (pal.acc, "out", false);
+    key (pal.amber, "squeeze above", true);
+    key (pal.grass, "lift below", true);
+}
+
+// The moving parts: the spectrum bars and the two threshold curves
+void SpectralOverlay::paintAnalyzerLive (juce::Graphics& g)
+{
+    const auto& pal = panel.pal;
+    const auto plot = plotRect();
+    auto dbY = [&] (float db) { return plot.getY() + juce::jlimit (0.f, 1.f, -db / -kFloorDb) * plot.getHeight(); };
+
+    juce::Graphics::ScopedSaveState ss (g);
+    g.reduceClipRegion (plot.toNearestInt());
+
+    // spectrum: what comes in (pale, behind) and what leaves (bright, in front)
+    const float bwAll = plot.getWidth() / (float) SpectralCompressor::numBands;
+    for (size_t b = 0; b < shIn.size(); ++b)
+    {
+        const float x = plot.getX() + (float) b * bwAll;
+        const float yi = dbY (shIn[b]), yo = dbY (shOut[b]);
+
+        const juce::Rectangle<float> inBar (x + 0.4f, yi, bwAll - 0.8f, plot.getBottom() - yi);
+        g.setGradientFill (juce::ColourGradient (pal.ink.withAlpha (0.40f), 0.f, yi, pal.dim.withAlpha (0.07f), 0.f, plot.getBottom(), false));
+        g.fillRect (inBar);
+
+        const juce::Rectangle<float> outBar (x + 1.1f, yo, bwAll - 2.2f, plot.getBottom() - yo);
+        g.setGradientFill (juce::ColourGradient (pal.acc.interpolatedWith (pal.amber, 0.35f).withAlpha (0.95f), 0.f, yo,
+                                                 pal.accDark.withAlpha (0.65f), 0.f, plot.getBottom(), false));
+        g.fillRect (outBar);
+
+        if (shOut[b] > kFloorDb + 1.f)   // a little bead on each bar
+        {
+            g.setColour (pal.glow.brighter (0.4f).withAlpha (0.9f));
+            g.fillRect (outBar.getX(), yo, outBar.getWidth(), 1.4f);
+        }
+    }
+
+    // threshold curves, drawn from the very same formula the audio uses
+    const auto p = readParams();
+    juce::Path down, up;
+    bool first = true;
+    for (int i = 0; i <= (int) plot.getWidth(); i += 2)
+    {
+        const float hz = SpectralCompressor::fMinHz * std::pow (1000.f, (float) i / plot.getWidth());
+        const float thr = SpectralCompressor::thresholdDb (p, hz);
+        const float x = plot.getX() + (float) i;
+        if (first) { down.startNewSubPath (x, dbY (thr)); up.startNewSubPath (x, dbY (thr - p.upOffsetDb)); first = false; }
+        else       { down.lineTo (x, dbY (thr));          up.lineTo (x, dbY (thr - p.upOffsetDb)); }
+    }
+
+    const bool downOn = p.downRatio > 1.01f, upOn = p.upRatio > 1.01f;
+    for (int i = 3; i >= 1; --i)   // glow
+    {
+        g.setColour (pal.amber.withAlpha ((downOn ? 0.07f : 0.03f) * (float) (4 - i)));
+        g.strokePath (down, juce::PathStrokeType (1.6f + (float) i * 2.2f, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
+    }
+    g.setColour (pal.amber.withAlpha (downOn ? 0.95f : 0.45f));
+    g.strokePath (down, juce::PathStrokeType (1.6f));
+
+    juce::Path dashed;
+    const float dashes[] = { 5.f, 4.f };
+    juce::PathStrokeType (1.4f).createDashedStroke (dashed, up, dashes, 2);
+    g.setColour (pal.grass.withAlpha (upOn ? 0.95f : 0.35f));
+    g.fillPath (dashed);
+
+    if (! live)
+    {
+        g.setFont (Scat::serif (15.f, true));
+        g.setColour (pal.dim.withAlpha (0.9f));
+        const bool isOn = proc.apvts.getRawParameterValue ("son")->load() > 0.5f;
+        g.drawText (isOn ? "waiting for sound..." : "resting - press ON to wake it", plot.reduced (10.f), juce::Justification::centred);
+    }
+}
+
+// Everything that sits still while the window is open
+void SpectralOverlay::paintCardStatic (juce::Graphics& g)
+{
+    const auto& pal = panel.pal;
+    const auto cd = card();
+    panel.drawGlass (g, cd, 16.f, 0.86f);
+
+    g.setFont (Scat::titleFont (28.f));
+    g.setColour (juce::Colours::black.withAlpha (0.45f));
+    g.drawText ("Spectral Compressor", (int) cd.getX() + 23, (int) cd.getY() + 5, 360, 34, juce::Justification::centredLeft);
+    g.setGradientFill (juce::ColourGradient (pal.ink, 0.f, cd.getY() + 4.f, pal.ink.interpolatedWith (pal.amber, 0.55f), 0.f, cd.getY() + 38.f, false));
+    g.drawText ("Spectral Compressor", (int) cd.getX() + 22, (int) cd.getY() + 4, 360, 34, juce::Justification::centredLeft);
+
+    g.setFont (Scat::serif (13.f, true));
+    g.setColour (pal.dim);
+    g.drawText ("every frequency gets its own compressor", (int) cd.getX() + 24, (int) cd.getY() + 36, 360, 16, juce::Justification::centredLeft);
+
+    static const char* titles[3] = { "globals", "threshold", "dynamics" };
+    for (int r = 0; r < 3; ++r)
+    {
+        panel.drawGroup (g, group (r));
+        panel.drawGroupTitle (g, group (r), titles[r]);
+    }
+
+    paintAnalyzerShell (g);
+}
+
+// Renders the two cached layers. Called once each time the window opens.
+void SpectralOverlay::buildLayers()
+{
+    const auto& pal = panel.pal;
+    const int iw = juce::roundToInt ((float) ScattrPanel::baseW * layerScale), ih = juce::roundToInt ((float) ScattrPanel::baseH * layerScale);
+    const float W = (float) ScattrPanel::baseW, H = (float) ScattrPanel::baseH;
+
+    // backdrop: a blurred, dimmed copy of the plugin with a soft vignette
+    backdrop = juce::Image (juce::Image::RGB, iw, ih, true);
+    {
+        juce::Graphics bg (backdrop);
+        bg.addTransform (juce::AffineTransform::scale (layerScale));
+        bg.fillAll (pal.bgBot);
+        if (sharp.isValid())
+        {
+            const auto blurred = blurSnapshot (sharp, ScattrPanel::baseW / 4, ScattrPanel::baseH / 4, 3, 3);
+            bg.setImageResamplingQuality (juce::Graphics::highResamplingQuality);
+            bg.drawImage (blurred, 0, 0, ScattrPanel::baseW, ScattrPanel::baseH, 0, 0, blurred.getWidth(), blurred.getHeight());
+        }
+        bg.setColour (juce::Colours::black.withAlpha (0.36f));
+        bg.fillAll();
+        juce::ColourGradient vig (juce::Colours::transparentBlack, W * 0.5f, H * 0.5f, juce::Colours::black.withAlpha (0.38f), 0.f, 0.f, true);
+        bg.setGradientFill (vig);
+        bg.fillAll();
+    }
+
+    // card: drawn on a transparent image so its shadow and glow fall onto whatever is behind it
+    cardImg = juce::Image (juce::Image::ARGB, iw, ih, true);
+    {
+        juce::Graphics cg (cardImg);
+        cg.addTransform (juce::AffineTransform::scale (layerScale));
+        paintCardStatic (cg);
+    }
+}
+
+void SpectralOverlay::paint (juce::Graphics& g)
+{
+    const auto& pal = panel.pal;
+    const float e = smooth01 (progress);
+    const int W = getWidth(), H = getHeight();
+
+    // while opening, the real plugin melts into its blurred backdrop; once open the snapshot is not needed
+    if (e < 0.999f)
+    {
+        g.fillAll (pal.bgBot);
+        if (sharp.isValid()) g.drawImage (sharp, 0, 0, W, H, 0, 0, sharp.getWidth(), sharp.getHeight());
+    }
+    if (backdrop.isValid())
+    {
+        g.setOpacity (e);
+        g.drawImage (backdrop, 0, 0, W, H, 0, 0, backdrop.getWidth(), backdrop.getHeight());
+    }
+    if (cardImg.isValid())
+    {
+        g.setOpacity (e);
+        g.drawImage (cardImg, 0, 0, W, H, 0, 0, cardImg.getWidth(), cardImg.getHeight());
+    }
+    g.setOpacity (1.f);
+
+    // live parts (the controls themselves are children and paint after this)
+    const bool fading = e < 0.999f;
+    if (fading) g.beginTransparencyLayer (e);
+
+    const float lit = buttonLit (onBtn), en = smooth01 (lit);
+    if (en > 0.01f)   // glow behind the ON key
+    {
+        const auto r = onBtn.getBounds().toFloat().reduced (2.f);
+        for (int i = 6; i >= 1; --i)
+        {
+            const float t = (float) i / 6.f;
+            g.setColour (pal.acc.withAlpha (0.015f * en * (1.f - 0.6f * t)));
+            g.fillRoundedRectangle (r.expanded (2.f + t * 8.f), 10.f + t * 6.f);
+        }
+    }
+
+    paintAnalyzerLive (g);
+    paintKnobGlows (g);
+
+    if (fading) g.endTransparencyLayer();
 }
 
 // ---------------------------------------------------------------- plugin window

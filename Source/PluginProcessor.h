@@ -1,6 +1,7 @@
 #pragma once
 #include <juce_audio_utils/juce_audio_utils.h>
 #include <juce_dsp/juce_dsp.h>
+#include "SpectralCompressor.h"
 #include <atomic>
 #include <memory>
 #include <vector>
@@ -30,11 +31,12 @@ struct Texture
     int length = 0, xfade = 0;   // xfade = loop crossfade length in samples
 };
 
-class ScattrProcessor : public juce::AudioProcessor
+class ScattrProcessor : public juce::AudioProcessor,
+                        private juce::AsyncUpdater
 {
 public:
     ScattrProcessor();
-    ~ScattrProcessor() override = default;
+    ~ScattrProcessor() override { cancelPendingUpdate(); }
 
     void prepareToPlay (double sampleRate, int samplesPerBlock) override;
     void releaseResources() override {}
@@ -88,7 +90,14 @@ public:
     std::atomic<int>   scopeW { 0 };         // next write index, always kept in 0..scopeSize-1
     std::atomic<float> uiSampleRate { 44100.f };
 
+    // Spectral compressor (the pop-out window). The audio thread runs it; the editor reads its analyzer arrays.
+    SpectralCompressor spec;
+
 private:
+    void handleAsyncUpdate() override { setLatencySamples (pendingLatency.load()); }   // the host hears about latency on the message thread
+    std::atomic<int> pendingLatency { 0 };
+    int reportedLatency = 0;
+
     struct Grain
     {
         bool active = false;
