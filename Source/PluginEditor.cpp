@@ -125,7 +125,7 @@ inline float smooth01 (float t)
     return t * t * (3.f - 2.f * t);
 }
 
-// How "on" a toggle looks, 0..1. The panel glides this for the on/off buttons (the "lit" property, 0.4 s);
+// How "on" a toggle looks, 0..1. The panel glides this for the on/off buttons (the "lit" property, 0.2 s);
 // every other button simply follows its toggle state.
 inline float buttonLit (const juce::Button& b)
 {
@@ -181,9 +181,9 @@ void drawKeyBody (juce::Graphics& g, juce::Rectangle<float> bounds, float lit, b
 
     if (e > 0.01f)
     {
-        g.setColour (pal.acc.withAlpha (0.10f * e));
+        g.setColour (pal.acc.withAlpha (0.06f * e));
         g.fillRoundedRectangle (r.expanded (2.f), cr + 2.f);
-        g.setColour (pal.acc.withAlpha (0.16f * e));
+        g.setColour (pal.acc.withAlpha (0.09f * e));
         g.fillRoundedRectangle (r.expanded (1.f), cr + 1.f);
     }
     if (e < 0.99f && ! down)
@@ -201,13 +201,13 @@ void drawKeyBody (juce::Graphics& g, juce::Rectangle<float> bounds, float lit, b
 
     // top gloss
     const auto gl = r.reduced (1.5f, 1.f).withHeight (r.getHeight() * 0.48f);
-    g.setGradientFill (juce::ColourGradient (juce::Colours::white.withAlpha (down ? 0.04f : 0.22f), 0.f, gl.getY(),
+    g.setGradientFill (juce::ColourGradient (juce::Colours::white.withAlpha (down ? 0.03f : 0.12f), 0.f, gl.getY(),
                                              juce::Colours::white.withAlpha (0.f), 0.f, gl.getBottom(), false));
     g.fillRoundedRectangle (gl, cr - 1.f);
 
     if (flip > 0.f)   // the flash of switching
     {
-        g.setColour (pal.glow.brighter (0.4f).withAlpha (0.32f * flip));
+        g.setColour (pal.glow.brighter (0.4f).withAlpha (0.20f * flip));
         g.fillRoundedRectangle (r, cr);
     }
 
@@ -263,7 +263,7 @@ void ScattrLNF::drawRotarySlider (juce::Graphics& g, int x, int y, int w, int h,
         g.setGradientFill (body);
         g.fillEllipse (c.x - rad, c.y - rad, rad * 2.f, rad * 2.f);
 
-        g.setGradientFill (juce::ColourGradient (white.withAlpha (hot ? 0.55f : 0.38f), c.x, c.y - rad,
+        g.setGradientFill (juce::ColourGradient (white.withAlpha (hot ? 0.36f : 0.24f), c.x, c.y - rad,
                                                  black.withAlpha (0.45f), c.x, c.y + rad, false));
         g.drawEllipse (c.x - rad + 0.8f, c.y - rad + 0.8f, rad * 2.f - 1.6f, rad * 2.f - 1.6f, 1.6f);
     }
@@ -297,7 +297,7 @@ void ScattrLNF::drawRotarySlider (juce::Graphics& g, int x, int y, int w, int h,
         const float breathe = 0.85f + 0.15f * pulse;
         for (int i = 4; i >= 1; --i)   // bloom: wide and faint -> narrow and strong
         {
-            g.setColour (pal.acc.withAlpha ((hot ? 0.060f : 0.040f) * breathe * (5.f - (float) i)));
+            g.setColour (pal.acc.withAlpha ((hot ? 0.034f : 0.022f) * breathe * (5.f - (float) i)));
             g.strokePath (val, rounded (3.f + (float) i * 1.4f));
         }
 
@@ -310,7 +310,7 @@ void ScattrLNF::drawRotarySlider (juce::Graphics& g, int x, int y, int w, int h,
             g.setColour (pal.accDark.brighter (0.25f).interpolatedWith (pal.acc.brighter (0.3f), t1));
             g.strokePath (seg, rounded (3.f));
         }
-        g.setColour (pal.acc.brighter (0.7f).withAlpha (0.55f));
+        g.setColour (pal.acc.brighter (0.5f).withAlpha (0.35f));
         g.strokePath (val, rounded (1.1f));
     }
 
@@ -515,7 +515,7 @@ ScattrPanel::ScattrPanel (ScattrProcessor& p) : proc (p)
     };
     clearBtn.onClick = [this] { proc.clearSamples(); shown = -1; pinned = -1; listOff = 0; repaint(); };
 
-    applyTheme (proc.themeIdx.load());
+    applyTheme (proc.themeIdx.load(), false);
     setTab (0);
     lastTickMs = juce::Time::getMillisecondCounterHiRes();
     startTimerHz (30);
@@ -527,13 +527,38 @@ ScattrPanel::~ScattrPanel()
     setLookAndFeel (nullptr);
 }
 
-void ScattrPanel::applyTheme (int idx)
+void ScattrPanel::applyTheme (int idx, bool animate)
 {
     idx = juce::jlimit (0, (int) Scat::themes().size() - 1, idx);
+    if (animate && idx == curTheme && themeT >= 1.f) return;
+
+    // What is on screen right now becomes the "from" side. If we're interrupting an unfinished
+    // transition, bake the current blend into one image so the fade carries on from what the user sees.
+    if (animate && ! cache.isNull())
+    {
+        if (themeT < 1.f && prevCache.isValid())
+        {
+            juce::Image mix (juce::Image::RGB, cache.getWidth(), cache.getHeight(), true);
+            juce::Graphics mg (mix);
+            mg.drawImageAt (prevCache, 0, 0);
+            mg.setOpacity (smooth01 (themeT));
+            mg.drawImageAt (cache, 0, 0);
+            prevCache = mix;
+        }
+        else
+            prevCache = cache;
+    }
+    else
+        prevCache = {};
+
+    fromPal = pal;
     curTheme = idx;
     proc.themeIdx = idx;
-    pal = Scat::themes()[(size_t) idx].pal;
-    cacheTheme = -1;   // the cached sky and cards belong to the old palette
+    targetPal = Scat::themes()[(size_t) idx].pal;
+    themeT = animate ? 0.f : 1.f;
+    if (! animate) pal = targetPal;
+
+    cacheTheme = -1;   // the cached sky and cards are rebuilt with the new palette (see rebuildCache)
     lnf.setPalette (pal);
     themeBtn.setButtonText (Scat::themes()[(size_t) idx].name);
     sendLookAndFeelChange();   // refreshes the knob readouts' colours
@@ -761,28 +786,38 @@ void ScattrPanel::timerCallback()
     const float dt = juce::jlimit (0.f, 0.1f, (float) ((nowMs - lastTickMs) * 0.001));
     lastTickMs = nowMs;
 
-    // on/off buttons glide between their two looks in 0.4 s
+    // theme transition: the live colours glide to the new palette while the cached backdrop crossfades
+    if (themeT < 1.f)
+    {
+        themeT = juce::jmin (1.f, themeT + dt / themeFadeSec);
+        pal = Scat::lerpPal (fromPal, targetPal, smooth01 (themeT));
+        lnf.setPalette (pal);
+        sendLookAndFeelChange();
+        if (themeT >= 1.f) prevCache = {};
+    }
+
+    // on/off buttons glide between their two looks in 0.2 s
     for (auto* b : { &droneBtn, &tuneBtn, &fonBtn, &donBtn, &ronBtn })
     {
         const float target = b->getToggleState() ? 1.f : 0.f;
         float v = buttonLit (*b);
-        const float step = dt / 0.4f;
+        const float step = dt / 0.2f;
         v = v < target ? juce::jmin (target, v + step) : juce::jmax (target, v - step);
         b->getProperties().set ("lit", v);
     }
 
-    // hover tips: wait ~1.2 s on a control (0.25 s when moving between controls while a tip is already up)
+    // hover tips: wait ~0.5 s on a control (0.1 s when moving between controls while a tip is already up)
     {
         const int hov = juce::ModifierKeys::currentModifiers.isAnyMouseButtonDown() ? -1 : hoveredControl();
         if (hov != hoverId)
         {
             hoverId = hov;
             hoverSince = nowMs;
-            tipDelayMs = tipAlpha > 0.4f ? 250.0 : 1200.0;
+            tipDelayMs = tipAlpha > 0.4f ? 100.0 : 500.0;
         }
         const bool show = hoverId >= 0 && nowMs - hoverSince >= tipDelayMs;
         if (show) tipId = hoverId;
-        tipAlpha = juce::jlimit (0.f, 1.f, tipAlpha + (show ? 1.f : -1.f) * dt / 0.18f);
+        tipAlpha = juce::jlimit (0.f, 1.f, tipAlpha + (show ? 1.f : -1.f) * dt / 0.12f);
     }
 
     updateEq();
@@ -815,7 +850,7 @@ void ScattrPanel::timerCallback()
 
     playing  = proc.uiPlaying.load();
     shownPlaying = playing && playIdx == shown;
-    idleFade += ((shownPlaying ? 0.f : 1.f) - idleFade) * 0.12f;
+    idleFade += ((shownPlaying ? 0.f : 1.f) - idleFade) * 0.2f;
     progress = proc.uiProgress.load();
 
     const float gp = proc.uiGrain.load();
@@ -824,7 +859,7 @@ void ScattrPanel::timerCallback()
         lastGrain = gp;
         ticks.push_back ({ gp, juce::Random::getSystemRandom().nextFloat(), 1.f });
     }
-    for (auto& t : ticks) t.alpha -= 0.04f;
+    for (auto& t : ticks) t.alpha -= 0.07f;
     ticks.erase (std::remove_if (ticks.begin(), ticks.end(), [] (const Tick& t) { return t.alpha <= 0.f; }), ticks.end());
 
     repaint();
@@ -967,14 +1002,14 @@ void ScattrPanel::paintAtmosphere (juce::Graphics& g)
     const auto black = juce::Colours::black;
 
     {
-        juce::ColourGradient sun (pal.glow.withAlpha (0.36f), W * 0.80f, -30.f, pal.glow.withAlpha (0.f), W * 0.80f, 450.f, true);
-        sun.addColour (0.35, pal.glow.withAlpha (0.14f));
+        juce::ColourGradient sun (pal.glow.withAlpha (0.22f), W * 0.80f, -30.f, pal.glow.withAlpha (0.f), W * 0.80f, 450.f, true);
+        sun.addColour (0.35, pal.glow.withAlpha (0.08f));
         g.setGradientFill (sun);
         g.fillRect (0.f, 0.f, W, H);
     }
     {
-        juce::ColourGradient low (pal.acc.withAlpha (0.18f), W * 0.06f, H * 0.96f, pal.acc.withAlpha (0.f), W * 0.06f, H * 0.96f - 380.f, true);
-        low.addColour (0.4, pal.acc.withAlpha (0.06f));
+        juce::ColourGradient low (pal.acc.withAlpha (0.10f), W * 0.06f, H * 0.96f, pal.acc.withAlpha (0.f), W * 0.06f, H * 0.96f - 380.f, true);
+        low.addColour (0.4, pal.acc.withAlpha (0.035f));
         g.setGradientFill (low);
         g.fillRect (0.f, 0.f, W, H);
     }
@@ -987,7 +1022,7 @@ void ScattrPanel::paintAtmosphere (juce::Graphics& g)
         p.lineTo (x0 + w + lean + w * 0.8f, H);
         p.lineTo (x0 + lean, H);
         p.closeSubPath();
-        g.setGradientFill (juce::ColourGradient (c.withAlpha (alpha), 0.f, 0.f, c.withAlpha (0.f), 0.f, H * 0.85f, false));
+        g.setGradientFill (juce::ColourGradient (c.withAlpha (alpha * 0.65f), 0.f, 0.f, c.withAlpha (0.f), 0.f, H * 0.85f, false));
         g.fillPath (p);
     };
 
@@ -1005,7 +1040,7 @@ void ScattrPanel::paintAtmosphere (juce::Graphics& g)
             shaft (W * 0.58f,  60.f, -230.f, 0.07f, pal.acc);
             shaft (W * 0.76f,  90.f, -280.f, 0.06f, pal.glow);
             {
-                juce::ColourGradient hz (pal.glow.withAlpha (0.20f), W * 0.5f, H + 10.f, pal.glow.withAlpha (0.f), W * 0.5f, H - 300.f, true);
+                juce::ColourGradient hz (pal.glow.withAlpha (0.12f), W * 0.5f, H + 10.f, pal.glow.withAlpha (0.f), W * 0.5f, H - 300.f, true);
                 g.setGradientFill (hz);
                 g.fillRect (0.f, 0.f, W, H);
             }
@@ -1029,8 +1064,8 @@ void ScattrPanel::paintAtmosphere (juce::Graphics& g)
                 ribbon.closeSubPath();
 
                 juce::ColourGradient gr (c.withAlpha (0.f), 0.f, y0 - 30.f, c.withAlpha (0.f), 0.f, y0 + 200.f, false);
-                gr.addColour (0.18, c.withAlpha (0.22f));
-                gr.addColour (0.55, c.withAlpha (0.07f));
+                gr.addColour (0.18, c.withAlpha (0.14f));
+                gr.addColour (0.55, c.withAlpha (0.045f));
                 g.setGradientFill (gr);
                 g.fillPath (ribbon);
             }
@@ -1044,7 +1079,7 @@ void ScattrPanel::paintAtmosphere (juce::Graphics& g)
     }
 
     {   // vignette
-        juce::ColourGradient vg (black.withAlpha (0.f), W * 0.5f, H * 0.46f, black.withAlpha (0.55f), 0.f, 0.f, true);
+        juce::ColourGradient vg (black.withAlpha (0.f), W * 0.5f, H * 0.46f, black.withAlpha (0.40f), 0.f, 0.f, true);
         vg.addColour (0.55, black.withAlpha (0.f));
         vg.addColour (0.80, black.withAlpha (0.22f));
         g.setGradientFill (vg);
@@ -1053,7 +1088,7 @@ void ScattrPanel::paintAtmosphere (juce::Graphics& g)
     {   // mist along the bottom, lit from within
         g.setGradientFill (juce::ColourGradient (black.withAlpha (0.f), 0.f, H - 130.f, black.withAlpha (0.42f), 0.f, H, false));
         g.fillRect (0.f, H - 130.f, W, 130.f);
-        juce::ColourGradient gl (pal.glow.withAlpha (0.10f), W * 0.5f, H, pal.glow.withAlpha (0.f), W * 0.5f, H - 150.f, true);
+        juce::ColourGradient gl (pal.glow.withAlpha (0.06f), W * 0.5f, H, pal.glow.withAlpha (0.f), W * 0.5f, H - 150.f, true);
         g.setGradientFill (gl);
         g.fillRect (0.f, H - 150.f, W, 150.f);
     }
@@ -1067,11 +1102,11 @@ void ScattrPanel::paintTitleGlow (juce::Graphics& g)
     for (int layer = 0; layer < 3; ++layer)
     {
         const float rr = 6.f - 2.f * (float) layer;   // 6, 4, 2 px
-        g.setColour (pal.glow.withAlpha (0.05f + 0.03f * (float) layer));
+        g.setColour (pal.glow.withAlpha (0.03f + 0.02f * (float) layer));
         for (int k = 0; k < 12; ++k)
         {
             const float ang = (float) k * twoPi / 12.f;
-            g.drawText ("S C A T T R", juce::roundToInt (18.f + std::cos (ang) * rr), juce::roundToInt (14.f + std::sin (ang) * rr),
+            g.drawText ("P O L L E N", juce::roundToInt (18.f + std::cos (ang) * rr), juce::roundToInt (14.f + std::sin (ang) * rr),
                         300, 50, juce::Justification::centredLeft);
         }
     }
@@ -1163,8 +1198,8 @@ void ScattrPanel::drawGlass (juce::Graphics& g, juce::Rectangle<float> r, float 
         outside.setUsingNonZeroWinding (false);   // even-odd: everything except the card itself
         g.reduceClipRegion (outside);
 
-        juce::DropShadow (black.withAlpha (0.55f), 12, juce::Point<int> (0, 5)).drawForPath (g, card);
-        juce::DropShadow (pal.glow.withAlpha (inset ? 0.14f : 0.28f), inset ? 10 : 18, juce::Point<int> (0, 0)).drawForPath (g, card);
+        juce::DropShadow (black.withAlpha (0.42f), 12, juce::Point<int> (0, 5)).drawForPath (g, card);
+        juce::DropShadow (pal.glow.withAlpha (inset ? 0.08f : 0.15f), inset ? 10 : 18, juce::Point<int> (0, 0)).drawForPath (g, card);
     }
 
     {
@@ -1182,31 +1217,31 @@ void ScattrPanel::drawGlass (juce::Graphics& g, juce::Rectangle<float> r, float 
         }
         else         // raised: sheen on the upper half
         {
-            g.setGradientFill (juce::ColourGradient (white.withAlpha (0.13f), 0.f, r.getY(),
+            g.setGradientFill (juce::ColourGradient (white.withAlpha (0.07f), 0.f, r.getY(),
                                                      white.withAlpha (0.f), 0.f, r.getY() + r.getHeight() * 0.55f, false));
             g.fillRect (r);
         }
 
         // a hot spot of light in the top-left corner
-        g.setGradientFill (juce::ColourGradient (white.withAlpha (0.10f), r.getX() + 36.f, r.getY() + 4.f,
+        g.setGradientFill (juce::ColourGradient (white.withAlpha (0.055f), r.getX() + 36.f, r.getY() + 4.f,
                                                  white.withAlpha (0.f), r.getX() + 220.f, r.getY() + 4.f, true));
         g.fillRect (r);
 
         // warm light pooling along the bottom edge
         g.setGradientFill (juce::ColourGradient (pal.glow.withAlpha (0.f), 0.f, r.getBottom() - r.getHeight() * 0.5f,
-                                                 pal.glow.withAlpha (inset ? 0.07f : 0.12f), 0.f, r.getBottom(), false));
+                                                 pal.glow.withAlpha (inset ? 0.04f : 0.07f), 0.f, r.getBottom(), false));
         g.fillRect (r);
     }
 
-    juce::ColourGradient rim (white.withAlpha (inset ? 0.12f : 0.40f), 0.f, r.getY(),
-                              pal.glow.withAlpha (0.26f), 0.f, r.getBottom(), false);
-    rim.addColour (0.5, pal.acc.withAlpha (0.20f));
+    juce::ColourGradient rim (white.withAlpha (inset ? 0.08f : 0.24f), 0.f, r.getY(),
+                              pal.glow.withAlpha (0.15f), 0.f, r.getBottom(), false);
+    rim.addColour (0.5, pal.acc.withAlpha (0.12f));
     g.setGradientFill (rim);
     g.drawRoundedRectangle (r.reduced (0.5f), radius, 1.2f);
 
     if (! inset)   // rim light along the top edge
     {
-        g.setColour (white.withAlpha (0.20f));
+        g.setColour (white.withAlpha (0.11f));
         g.drawLine (r.getX() + radius, r.getY() + 1.6f, r.getRight() - radius, r.getY() + 1.6f, 1.f);
     }
 }
@@ -1244,11 +1279,11 @@ void ScattrPanel::paintWave (juce::Graphics& g)
         const auto inner = wr.reduced (10.f, 0.f);
         const float cy = wr.getCentreY(), hh = wr.getHeight() * 0.44f;
 
-        const float al = shownPlaying ? 1.f : pinned >= 0 ? 0.75f : 0.45f;
+        const float al = shownPlaying ? 0.85f : pinned >= 0 ? 0.65f : 0.40f;
         for (int pass = 0; pass < 2; ++pass)   // pass 0 = soft glow, pass 1 = the waveform itself
         {
             if (pass == 0)
-                g.setColour (pal.acc.withAlpha (al * 0.22f));
+                g.setColour (pal.acc.withAlpha (al * 0.14f));
             else
                 g.setGradientFill (juce::ColourGradient (pal.acc.withAlpha (al), 0.f, wr.getY(),
                                                          pal.accDark.withAlpha (al), 0.f, wr.getBottom(), false));
@@ -1408,7 +1443,10 @@ void ScattrPanel::rebuildCache()
                          juce::roundToInt ((float) baseH * cacheScale), true);
     juce::Graphics cg (cache);
     cg.addTransform (juce::AffineTransform::scale (cacheScale));
+    const auto live = pal;   // the backdrop is always painted in the destination palette; the crossfade does the blending
+    pal = targetPal;
     paintStatic (cg);
+    pal = live;
     cacheTheme = curTheme;
     cacheTab = tab;
 }
@@ -1431,7 +1469,7 @@ void ScattrPanel::paintMotes (juce::Graphics& g)
         const float y = falls ? -10.f + t * (H + 20.f) : H + 10.f - t * (H + 20.f);
         const float r = 3.f + 5.f * std::fmod ((float) k * 0.413f, 1.f);
         const float twinkle = 0.5f + 0.5f * std::sin (anim * 1.3f + (float) k * 2.1f);
-        const float a = std::sin (t * pi) * (0.10f + 0.10f * twinkle);
+        const float a = std::sin (t * pi) * (0.06f + 0.06f * twinkle);
         const auto col = (k % 2 == 0) ? pal.glow : pal.amber;
 
         g.setGradientFill (juce::ColourGradient (col.withAlpha (a), x, y, col.withAlpha (0.f), x + r * 2.f, y, true));
@@ -1453,11 +1491,11 @@ void ScattrPanel::paintGlints (juce::Graphics& g)
     for (int i = 0; i < n; ++i)
     {
         const auto r = cards[i];
-        const float p = std::fmod (anim * 0.08f + (float) i * 0.37f, 1.8f);
+        const float p = std::fmod (anim * 0.16f + (float) i * 0.37f, 1.8f);
         if (p > 1.f) continue;
 
         const float gx = r.getX() + p * r.getWidth(), hw = 60.f;
-        const float a = 0.38f * std::sin (p * juce::MathConstants<float>::pi);
+        const float a = 0.22f * std::sin (p * juce::MathConstants<float>::pi);
 
         juce::Graphics::ScopedSaveState ss (g);
         g.reduceClipRegion (r.reduced (8.f, 0.f).toNearestInt());
@@ -1473,9 +1511,9 @@ void ScattrPanel::paintLabels (juce::Graphics& g)
     // title: soft shadow, then letters that warm from ivory to the highlight colour (the glow is in the cache)
     g.setFont (serif (38.f));
     g.setColour (juce::Colours::black.withAlpha (0.55f));
-    g.drawText ("S C A T T R", 19, 16, 300, 50, juce::Justification::centredLeft);
+    g.drawText ("P O L L E N", 19, 16, 300, 50, juce::Justification::centredLeft);
     g.setGradientFill (juce::ColourGradient (pal.ink, 0.f, 18.f, pal.ink.interpolatedWith (pal.amber, 0.55f), 0.f, 60.f, false));
-    g.drawText ("S C A T T R", 18, 14, 300, 50, juce::Justification::centredLeft);
+    g.drawText ("P O L L E N", 18, 14, 300, 50, juce::Justification::centredLeft);
 
     if (tab == 0)
     {
@@ -1615,7 +1653,7 @@ void ScattrPanel::paintKnobGlows (juce::Graphics& g)
         const float breathe = 0.9f + 0.1f * std::sin (anim * 1.7f + c.x * 0.03f);
 
         const float R = rad * 2.3f;
-        const float strength = (0.05f + 0.17f * pos + (hot ? 0.07f : 0.f)) * breathe * al;
+        const float strength = (0.03f + 0.09f * pos + (hot ? 0.04f : 0.f)) * breathe * al;
         juce::ColourGradient amb (pal.acc.withAlpha (strength), c.x, c.y, pal.acc.withAlpha (0.f), c.x + R, c.y, true);
         amb.addColour (0.45, pal.acc.withAlpha (strength * 0.35f));
         g.setGradientFill (amb);
@@ -1626,7 +1664,7 @@ void ScattrPanel::paintKnobGlows (juce::Graphics& g)
             const float ang = a0 + pos * (a1 - a0), ar = rad + 4.f;
             const float bx = c.x + std::sin (ang) * ar, by = c.y - std::cos (ang) * ar;
             const float br = hot ? 20.f : 16.f;
-            g.setGradientFill (juce::ColourGradient (pal.glow.withAlpha (0.42f * al), bx, by, pal.glow.withAlpha (0.f), bx + br, by, true));
+            g.setGradientFill (juce::ColourGradient (pal.glow.withAlpha (0.26f * al), bx, by, pal.glow.withAlpha (0.f), bx + br, by, true));
             g.fillEllipse (bx - br, by - br, br * 2.f, br * 2.f);
         }
     }
@@ -1647,7 +1685,7 @@ void ScattrPanel::paintToggleGlows (juce::Graphics& g)
         for (int i = 6; i >= 1; --i)
         {
             const float t = (float) i / 6.f;   // 1 = outermost layer
-            g.setColour (pal.acc.withAlpha ((0.025f * e + 0.045f * flip) * (1.f - 0.6f * t)));
+            g.setColour (pal.acc.withAlpha ((0.015f * e + 0.03f * flip) * (1.f - 0.6f * t)));
             g.fillRoundedRectangle (r.expanded (2.f + t * (7.f + 6.f * flip)), 10.f + t * 6.f);
         }
     }
@@ -1709,7 +1747,13 @@ void ScattrPanel::paintTip (juce::Graphics& g)
 void ScattrPanel::paint (juce::Graphics& g)
 {
     if (cache.isNull() || cacheTheme != curTheme || cacheTab != tab) rebuildCache();
+    if (themeT < 1.f && prevCache.isValid())
+    {
+        g.drawImage (prevCache, 0, 0, baseW, baseH, 0, 0, prevCache.getWidth(), prevCache.getHeight());
+        g.setOpacity (smooth01 (themeT));
+    }
     g.drawImage (cache, 0, 0, baseW, baseH, 0, 0, cache.getWidth(), cache.getHeight());
+    g.setOpacity (1.f);
 
     paintMotes (g);
     paintGlints (g);

@@ -8,15 +8,35 @@ namespace Scat
         juce::Colour bgTop, bgMid, bgBot, soil, moss, ink, dim, line, bark, acc, accDark, amber, grass, grassDark, glow;
     };
 
+    // Global "calmness" of the look: 1 = the old, bold colours, lower = softer and more muted.
+    // Saturation is scaled per colour role so backgrounds go quietest and accents stay readable.
+    inline constexpr float calmBg = 0.55f, calmAccent = 0.58f, calmText = 0.55f;
+
+    inline juce::Colour calm (juce::uint32 argb, float sat, float bright = 1.f)
+    {
+        const juce::Colour c (argb);
+        return juce::Colour::fromHSV (c.getHue(), c.getSaturation() * sat, c.getBrightness() * bright, 1.f);
+    }
+
     inline Palette makePal (juce::uint32 bgTop, juce::uint32 bgMid, juce::uint32 bgBot, juce::uint32 soil,
                             juce::uint32 moss, juce::uint32 ink, juce::uint32 dim, juce::uint32 line,
                             juce::uint32 bark, juce::uint32 acc, juce::uint32 accDark, juce::uint32 amber,
                             juce::uint32 grass, juce::uint32 grassDark, juce::uint32 glow)
     {
-        return { juce::Colour (bgTop), juce::Colour (bgMid), juce::Colour (bgBot), juce::Colour (soil),
-                 juce::Colour (moss), juce::Colour (ink), juce::Colour (dim), juce::Colour (line),
-                 juce::Colour (bark), juce::Colour (acc), juce::Colour (accDark), juce::Colour (amber),
-                 juce::Colour (grass), juce::Colour (grassDark), juce::Colour (glow) };
+        return { calm (bgTop, calmBg), calm (bgMid, calmBg), calm (bgBot, calmBg), calm (soil, calmBg),
+                 calm (moss, calmBg), calm (ink, calmText), calm (dim, calmText), calm (line, calmBg),
+                 calm (bark, calmBg), calm (acc, calmAccent, 0.94f), calm (accDark, calmAccent, 0.94f), calm (amber, calmAccent, 0.94f),
+                 calm (grass, calmAccent, 0.94f), calm (grassDark, calmAccent), calm (glow, calmAccent, 0.94f) };
+    }
+
+    // Blend two palettes (used for the theme transition)
+    inline Palette lerpPal (const Palette& a, const Palette& b, float t)
+    {
+        auto m = [t] (juce::Colour x, juce::Colour y) { return x.interpolatedWith (y, t); };
+        return { m (a.bgTop, b.bgTop), m (a.bgMid, b.bgMid), m (a.bgBot, b.bgBot), m (a.soil, b.soil),
+                 m (a.moss, b.moss), m (a.ink, b.ink), m (a.dim, b.dim), m (a.line, b.line),
+                 m (a.bark, b.bark), m (a.acc, b.acc), m (a.accDark, b.accDark), m (a.amber, b.amber),
+                 m (a.grass, b.grass), m (a.grassDark, b.grassDark), m (a.glow, b.glow) };
     }
 
     struct Theme { const char* name; Palette pal; };
@@ -107,7 +127,7 @@ public:
 
 private:
     void timerCallback() override;
-    void applyTheme (int idx);
+    void applyTheme (int idx, bool animate = true);
     void showSampleMenu (int idx);   // right-click menu on a sample: mute / remove
     void setTab (int t);
 
@@ -160,7 +180,11 @@ private:
 
     ScattrProcessor& proc;
     ScattrLNF lnf;
-    Scat::Palette pal;
+    Scat::Palette pal;                     // what is drawn right now (blends fromPal -> targetPal during a transition)
+    Scat::Palette fromPal, targetPal;
+    float themeT = 1.f;                    // 0..1 progress of the theme transition (1 = settled)
+    juce::Image prevCache;                 // the old theme's static layer, faded out during the transition
+    static constexpr float themeFadeSec = 0.7f;
     int curTheme = 0, tab = 0;
     std::array<Knob, 22> knobs;
     std::array<juce::TextButton, 2> tabBtn;
@@ -193,7 +217,7 @@ private:
 
     // hover tips: a note appears after the pointer rests on a control for a moment
     int hoverId = -1, tipId = -1;
-    double hoverSince = 0.0, tipDelayMs = 1200.0, lastTickMs = 0.0;
+    double hoverSince = 0.0, tipDelayMs = 500.0, lastTickMs = 0.0;
     float tipAlpha = 0.f;
 
     struct Tick { float pos, y, alpha; };
