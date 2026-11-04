@@ -180,7 +180,7 @@ const Tip kTips[30] = {
     { "filter",        "Turns the filter on or off." },
     { "echo",          "Turns the echo on or off." },
     { "reverb",        "Turns the reverb on or off." },
-    { "spectral gate", "Opens the spectral gate, which closes off each frequency on its own when it falls quiet. Lit while on." }
+    { "spectral gate", "Opens the spectral gate, which keeps or removes each frequency depending on whether it is above or below a cutoff. Lit while on." }
 };
 
 // A raised, glossy key. `lit` (0..1) is how switched-on it looks: the body, glow and rim fade between the two
@@ -637,22 +637,20 @@ void ScattrPanel::resized()
         knobs[idx].slider.setBounds (x, y + 38, sw, sliderH);
     };
 
-    // grains tab: two roomy rows
+    // grains tab: two rows of six equal columns, so nothing is left hanging empty at the right-hand end
     {
-        static const size_t row1[7] = { 0, 1, 2, 3, 4, 21, 17 };  // seed size, rain, speed, wind, scatter, pan spread, master tune
-        static const size_t row2[4] = { 5, 6, 19, 7 };             // bloom, rest, random, sun
-        for (int k = 0; k < 7; ++k) place (row1[k], grainPanel(), 7, k, 88);
-        for (int k = 0; k < 4; ++k) place (row2[k], motionPanel(), 7, k, 88);
+        static const size_t row1[6] = { 0, 1, 2, 3, 4, 21 };      // seed size, rain, speed, wind, scatter, pan spread
+        static const size_t row2[5] = { 5, 6, 19, 7, 17 };         // bloom, rest, random, sun, master tune
+        for (int k = 0; k < 6; ++k) place (row1[k], grainPanel(), 6, k, 88);
+        for (int k = 0; k < 5; ++k) place (row2[k], motionPanel(), 6, k, 88);
 
+        // the last column of the motion row holds the three keys, stacked and level with the knobs
         const auto mp = motionPanel();
-        const int sw = (int) ((mp.getWidth() - 24.f) / 7.f);
-        const int bx = (int) mp.getX() + 12 + 4 * sw + (sw - 80) / 2;
-        droneBtn.setBounds (bx, (int) mp.getY() + 40, 80, 28);
-        tuneBtn.setBounds  (bx, (int) mp.getY() + 78, 80, 28);
-
-        // the spectral gate button sits in the next free column of the motion row, centred on the DRIFT / TUNE pair
-        const int sx = (int) mp.getX() + 12 + 5 * sw;
-        specBtn.setBounds (sx + (sw - 112) / 2 + 6, (int) mp.getY() + 59, 112, 28);
+        const int sw = (int) ((mp.getWidth() - 24.f) / 6.f);
+        const int bw = 104, bx = (int) mp.getX() + 12 + 5 * sw + (sw - bw) / 2;
+        droneBtn.setBounds (bx, (int) mp.getY() + 36,  bw, 26);
+        tuneBtn.setBounds  (bx, (int) mp.getY() + 68,  bw, 26);
+        specBtn.setBounds  (bx, (int) mp.getY() + 100, bw, 26);
     }
 
     // fx tab: one row per effect, shared 5-column grid
@@ -694,7 +692,7 @@ int ScattrPanel::hitHandle (float x) const
 }
 
 // "Nature" and its sprout sit together in the middle of the header
-float ScattrPanel::titleX() const  { return (float) baseW * 0.5f - (titleWidth() + sproutGap + sproutHalf) * 0.5f; }
+float ScattrPanel::titleX() const  { return 0.5f * (200.f + eqRect().getX()) - (titleWidth() + sproutGap + sproutHalf) * 0.5f; }
 float ScattrPanel::sproutX() const { return titleX() + titleWidth() + sproutGap; }
 
 bool ScattrPanel::isInterestedInFileDrag (const juce::StringArray&)
@@ -1666,8 +1664,10 @@ void ScattrPanel::paintEq (juce::Graphics& g)
     {
         const float x = b.getX() + (float) i * (bw + gap);
         const float lv = eqLevel[(size_t) i];
-        const float idle = 0.5f + 0.5f * std::sin (anim * 1.3f + (float) i * 0.55f);   // keeps the bars faintly alive in silence
-        const float h = 2.f + (maxH - 2.f) * lv + 1.4f * idle * (1.f - lv);
+        // in silence the bars sway in a slow travelling swell, so the box never looks like an empty slot
+        const float idle = 0.5f + 0.5f * std::sin (anim * 1.3f - (float) i * 0.55f);
+        const float swell = (0.10f + 0.26f * idle) * (0.6f + 0.4f * std::sin (anim * 0.5f + (float) i * 0.21f));
+        const float h = 2.f + (maxH - 2.f) * lv + (maxH - 2.f) * swell * (1.f - lv);
         const juce::Rectangle<float> bar (x, baseY - h, bw, h);
 
         // soft halo at the tip, brighter the louder the band
@@ -1922,26 +1922,10 @@ struct SpecDef
     double (*read) (const juce::String&);
 };
 
-const SpecDef kSpecDefs[12] = {
-    // globals
-    { "smix",   "mix",        [] (double v) { return juce::String (juce::roundToInt ((float) (v * 100.0))) + "%"; },
-                              [] (const juce::String& t) { return plainNumber (t) / 100.0; } },
-    { "sgain",  "output",     [] (double v) { return juce::String (v, 1) + " dB"; },  plainNumber },
-    { "satk",   "attack",     [] (double v) { return juce::String (v, 1) + " ms"; },  plainNumber },
-    { "srel",   "release",    [] (double v) { return v >= 1000.0 ? juce::String (v / 1000.0, 2) + " s" : juce::String (juce::roundToInt ((float) v)) + " ms"; },
-                              [] (const juce::String& t) { const double n = plainNumber (t); return (t.containsIgnoreCase ("s") && ! t.containsIgnoreCase ("ms")) ? n * 1000.0 : n; } },
-    // threshold
-    { "sthr",   "threshold",  [] (double v) { return juce::String (v, 1) + " dB"; },  plainNumber },
-    { "scen",   "center",     [] (double v) { return v >= 1000.0 ? juce::String (v / 1000.0, 2) + " kHz" : juce::String (juce::roundToInt ((float) v)) + " Hz"; },
-                              [] (const juce::String& t) { const double n = plainNumber (t); return t.containsIgnoreCase ("k") ? n * 1000.0 : n; } },
-    { "sslope", "slope",      [] (double v) { return juce::String (v, 2) + " dB/oct"; }, plainNumber },
-    { "scurve", "curve",      [] (double v) { return juce::String (v, 2) + " dB/oct" + juce::String (juce::CharPointer_UTF8 ("\xc2\xb2")); }, plainNumber },
-    // gate
-    { "srange",   "range",      [] (double v) { return juce::String (v, 1) + " dB"; }, plainNumber },
-    { "shold",    "hold",       [] (double v) { return juce::String (juce::roundToInt ((float) v)) + " ms"; }, plainNumber },
-    { "sknee",    "knee",       [] (double v) { return juce::String (v, 1) + " dB"; }, plainNumber },
-    { "ssmooth",  "smooth",     [] (double v) { return juce::String (juce::roundToInt ((float) (v * 100.0))) + "%"; },
-                                [] (const juce::String& t) { return plainNumber (t) / 100.0; } }
+const SpecDef kSpecDefs[3] = {
+    { "sthr",  "cutoff",         [] (double v) { return juce::String (v, 1) + " dB"; }, plainNumber },
+    { "sbal",  "weak / strong",  [] (double v) { return juce::String (v, 2); },         plainNumber },
+    { "stilt", "tilt",           [] (double v) { return juce::String (v, 2); },         plainNumber }
 };
 
 constexpr float kFloorDb = -100.f;   // bottom of the analyzer
@@ -1975,6 +1959,9 @@ SpectralOverlay::SpectralOverlay (ScattrPanel& p, ScattrProcessor& pr) : panel (
 
     addAndMakeVisible (onBtn);
     onAttach = std::make_unique<juce::AudioProcessorValueTreeState::ButtonAttachment> (proc.apvts, "son", onBtn);
+
+    addAndMakeVisible (tiltBtn);
+    tiltAttach = std::make_unique<juce::AudioProcessorValueTreeState::ButtonAttachment> (proc.apvts, "stilton", tiltBtn);
 
     addAndMakeVisible (winBtn);
     winBtn.onClick = [this]
@@ -2037,34 +2024,46 @@ void SpectralOverlay::mouseDown (const juce::MouseEvent& e)
 
 void SpectralOverlay::resized()
 {
-    // knob grid: three rows of four, the same rhythm as the main panel
-    static const size_t order[12] = { 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11 };
-    for (int r = 0; r < 3; ++r)
+    // "gate" card: cutoff and weak / strong balance, side by side
     {
-        const auto gr = group (r);
-        const int sw = (int) ((gr.getWidth() - 24.f) / 4.f);
-        for (int c = 0; c < 4; ++c)
+        const auto gr = group (0);
+        const int sw = (int) ((gr.getWidth() - 24.f) / 2.f);
+        for (int c = 0; c < 2; ++c)
         {
-            auto& k = knobs[order[r * 4 + c]];
+            auto& k = knobs[(size_t) c];
             const int x = (int) gr.getX() + 12 + c * sw, y = (int) gr.getY();
             k.label.setBounds (x, y + 22, sw, 16);
-            k.slider.setBounds (x, y + 38, sw, 88);
+            k.slider.setBounds (x, y + 38, sw, 150);
         }
+    }
+
+    // "tilt" card: the tilt knob, and beside it the enable key and the FFT size key
+    {
+        const auto gr = group (1);
+        const int sw = (int) ((gr.getWidth() - 24.f) / 2.f);
+        const int x = (int) gr.getX() + 12, y = (int) gr.getY();
+        auto& k = knobs[2];
+        k.label.setBounds (x, y + 22, sw, 16);
+        k.slider.setBounds (x, y + 38, sw, 150);
+
+        const int bx = x + sw + (sw - 124) / 2;
+        tiltBtn.setBounds (bx, y + 46, 124, 32);
+        winBtn.setBounds  (bx, y + 118, 124, 32);
     }
 
     const auto cd = card();
     doneBtn.setBounds ((int) cd.getRight() - 16 - 76, (int) cd.getY() + 12, 76, 30);
-    winBtn.setBounds  (doneBtn.getX() - 8 - 118, (int) cd.getY() + 12, 118, 30);
-    onBtn.setBounds   (winBtn.getX() - 8 - 64, (int) cd.getY() + 12, 64, 30);
+    onBtn.setBounds   (doneBtn.getX() - 8 - 64, (int) cd.getY() + 12, 64, 30);
 }
 
 SpectralGate::Params SpectralOverlay::readParams() const
 {
     auto v = [this] (const char* id) { return proc.apvts.getRawParameterValue (id)->load(); };
     SpectralGate::Params p;
-    p.mix = v ("smix");        p.outGainDb = v ("sgain");   p.thrDb = v ("sthr");      p.centerHz = v ("scen");
-    p.slope = v ("sslope");    p.curve = v ("scurve");      p.rangeDb = v ("srange");   p.holdMs = v ("shold");
-    p.kneeDb = v ("sknee");    p.smooth = v ("ssmooth");    p.attackMs = v ("satk");    p.releaseMs = v ("srel");
+    p.cutoffDb = v ("sthr");
+    p.balance  = v ("sbal");
+    p.tiltOn   = v ("stilton") > 0.5f;
+    p.tilt     = v ("stilt");
     return p;
 }
 
@@ -2095,17 +2094,26 @@ void SpectralOverlay::timerCallback()
         return;
     }
 
-    // the ON button glides between its looks like the panel's buttons do
+    // the keys glide between their looks like the panel's buttons do
+    for (auto* b : { &onBtn, &tiltBtn })
     {
-        const float target = onBtn.getToggleState() ? 1.f : 0.f;
-        float v = buttonLit (onBtn);
+        const float target = b->getToggleState() ? 1.f : 0.f;
+        float v = buttonLit (*b);
         const float step = dt / 0.2f;
         v = v < target ? juce::jmin (target, v + step) : juce::jmax (target, v - step);
-        onBtn.getProperties().set ("lit", v);
+        b->getProperties().set ("lit", v);
+    }
+
+    // the tilt knob looks asleep while tilt is off
+    {
+        const float fade = smooth01 (progress);
+        const float a = fade * (0.4f + 0.6f * smooth01 (buttonLit (tiltBtn)));
+        knobs[2].slider.setAlpha (a);
+        knobs[2].label.setAlpha (a);
     }
 
     static const char* wn[4] = { "512", "1024", "2048", "4096" };
-    const juce::String wt = juce::String ("WINDOW ") + wn[juce::jlimit (0, 3, (int) proc.apvts.getRawParameterValue ("swin")->load())];
+    const juce::String wt = wn[juce::jlimit (0, 3, (int) proc.apvts.getRawParameterValue ("swin")->load())];
     if (winBtn.getButtonText() != wt) winBtn.setButtonText (wt);
 
     // analyzer: follow the audio thread's frames; fall away when nothing is being processed
@@ -2139,9 +2147,10 @@ void SpectralOverlay::paintKnobGlows (juce::Graphics& g)
         const float rad = (juce::jmin (rb.getWidth(), rb.getHeight()) - 2.f * Scat::knobPad) * 0.5f;
         const bool hot = s.isMouseOverOrDragging();
         const float breathe = 0.9f + 0.1f * std::sin (anim * 1.7f + c.x * 0.03f);
+        const float al = s.getAlpha();
 
         const float R = rad * 2.3f;
-        const float strength = (0.03f + 0.09f * pos + (hot ? 0.04f : 0.f)) * breathe;
+        const float strength = (0.03f + 0.09f * pos + (hot ? 0.04f : 0.f)) * breathe * al;
         juce::ColourGradient amb (pal.acc.withAlpha (strength), c.x, c.y, pal.acc.withAlpha (0.f), c.x + R, c.y, true);
         amb.addColour (0.45, pal.acc.withAlpha (strength * 0.35f));
         g.setGradientFill (amb);
@@ -2152,7 +2161,7 @@ void SpectralOverlay::paintKnobGlows (juce::Graphics& g)
             const float ang = a0 + pos * (a1 - a0), ar = rad + 4.f;
             const float bx = c.x + std::sin (ang) * ar, by = c.y - std::cos (ang) * ar;
             const float br = hot ? 20.f : 16.f;
-            g.setGradientFill (juce::ColourGradient (pal.glow.withAlpha (0.26f), bx, by, pal.glow.withAlpha (0.f), bx + br, by, true));
+            g.setGradientFill (juce::ColourGradient (pal.glow.withAlpha (0.26f * al), bx, by, pal.glow.withAlpha (0.f), bx + br, by, true));
             g.fillEllipse (bx - br, by - br, br * 2.f, br * 2.f);
         }
     }
@@ -2212,8 +2221,7 @@ void SpectralOverlay::paintAnalyzerShell (juce::Graphics& g)
     };
     key (pal.ink.withAlpha (0.55f), "in", false);
     key (pal.acc, "out", false);
-    key (pal.amber, "threshold", true);
-    key (pal.grass, "closed level", true);
+    key (pal.amber, "cutoff", true);
 }
 
 // The moving parts: the spectrum bars and the two threshold curves
@@ -2249,44 +2257,50 @@ void SpectralOverlay::paintAnalyzerLive (juce::Graphics& g)
         }
     }
 
-    // threshold curve and the level a closed bin falls to, drawn from the very same formula the audio uses
+    // the cutoff curve, drawn from the very same formula the audio uses (tilt included)
     const auto p = readParams();
-    juce::Path thrLine, floorLine;
+    juce::Path thrLine;
     bool first = true;
     for (int i = 0; i <= (int) plot.getWidth(); i += 2)
     {
         const float hz = SpectralGate::fMinHz * std::pow (1000.f, (float) i / plot.getWidth());
-        const float thr = SpectralGate::thresholdDb (p, hz);
-        const float x = plot.getX() + (float) i;
-        if (first) { thrLine.startNewSubPath (x, dbY (thr)); floorLine.startNewSubPath (x, dbY (thr + p.rangeDb)); first = false; }
-        else       { thrLine.lineTo (x, dbY (thr));          floorLine.lineTo (x, dbY (thr + p.rangeDb)); }
+        const float x = plot.getX() + (float) i, y = dbY (SpectralGate::thresholdDb (p, hz));
+        if (first) { thrLine.startNewSubPath (x, y); first = false; }
+        else         thrLine.lineTo (x, y);
     }
 
-    const bool gating = p.rangeDb < -0.5f;
-
-    // the zone below the threshold is where the gate is closed: a faint wash makes that readable at a glance
+    // below the curve is the weak side, above it the strong side. Each is tinted by how far it is held back,
+    // so the balance setting can be read straight off the picture
+    const float held = 1.f - SpectralGate::weakGain (p), heldS = 1.f - SpectralGate::strongGain (p);
     {
-        juce::Path zone (thrLine);
-        zone.lineTo (plot.getRight() + 2.f, plot.getBottom() + 2.f);
-        zone.lineTo (plot.getX() - 2.f, plot.getBottom() + 2.f);
-        zone.closeSubPath();
-        g.setColour (pal.amber.withAlpha (gating ? 0.07f : 0.03f));
-        g.fillPath (zone);
+        juce::Path weak (thrLine);
+        weak.lineTo (plot.getRight() + 2.f, plot.getBottom() + 2.f);
+        weak.lineTo (plot.getX() - 2.f, plot.getBottom() + 2.f);
+        weak.closeSubPath();
+        g.setColour (pal.amber.withAlpha (0.03f + 0.15f * held));
+        g.fillPath (weak);
+
+        juce::Path strong (thrLine);
+        strong.lineTo (plot.getRight() + 2.f, plot.getY() - 2.f);
+        strong.lineTo (plot.getX() - 2.f, plot.getY() - 2.f);
+        strong.closeSubPath();
+        g.setColour (pal.grass.withAlpha (0.02f + 0.13f * heldS));
+        g.fillPath (strong);
     }
 
     for (int i = 3; i >= 1; --i)   // glow
     {
-        g.setColour (pal.amber.withAlpha ((gating ? 0.07f : 0.03f) * (float) (4 - i)));
+        g.setColour (pal.amber.withAlpha (0.07f * (float) (4 - i)));
         g.strokePath (thrLine, juce::PathStrokeType (1.6f + (float) i * 2.2f, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
     }
-    g.setColour (pal.amber.withAlpha (gating ? 0.95f : 0.45f));
+    g.setColour (pal.amber.withAlpha (0.95f));
     g.strokePath (thrLine, juce::PathStrokeType (1.6f));
 
-    juce::Path dashed;
-    const float dashes[] = { 5.f, 4.f };
-    juce::PathStrokeType (1.4f).createDashedStroke (dashed, floorLine, dashes, 2);
-    g.setColour (pal.grass.withAlpha (gating ? 0.95f : 0.35f));
-    g.fillPath (dashed);
+    g.setFont (Scat::serif (12.f, true));
+    g.setColour (pal.grass.withAlpha (0.85f - 0.5f * heldS));
+    g.drawText ("strong", plot.withTrimmedRight (6.f).withHeight (16.f).translated (0.f, 3.f), juce::Justification::centredRight);
+    g.setColour (pal.amber.withAlpha (0.85f - 0.5f * held));
+    g.drawText ("weak", plot.withTrimmedRight (6.f).withTop (plot.getBottom() - 19.f).withHeight (16.f), juce::Justification::centredRight);
 
     if (! live)
     {
@@ -2312,13 +2326,22 @@ void SpectralOverlay::paintCardStatic (juce::Graphics& g)
 
     g.setFont (Scat::serif (13.f, true));
     g.setColour (pal.dim);
-    g.drawText ("every frequency gets its own gate", (int) cd.getX() + 24, (int) cd.getY() + 36, 360, 16, juce::Justification::centredLeft);
+    g.drawText ("lets through what is above the cutoff, or what is below it", (int) cd.getX() + 24, (int) cd.getY() + 36, 360, 16, juce::Justification::centredLeft);
 
-    static const char* titles[3] = { "globals", "threshold", "gate" };
-    for (int r = 0; r < 3; ++r)
+    static const char* titles[2] = { "gate", "tilt & window" };
+    for (int r = 0; r < 2; ++r)
     {
         panel.drawGroup (g, group (r));
         panel.drawGroupTitle (g, group (r), titles[r]);
+    }
+
+    // caption above the FFT size key (it sits in the second column of the "tilt" card)
+    {
+        const auto gr = group (1);
+        const float sw = (float) (int) ((gr.getWidth() - 24.f) / 2.f);
+        g.setFont (Scat::serif (14.f, true));
+        g.setColour (pal.dim);
+        g.drawText ("fft size", juce::Rectangle<float> (gr.getX() + 12.f + sw, gr.getY() + 94.f, sw, 20.f), juce::Justification::centred);
     }
 
     paintAnalyzerShell (g);
@@ -2387,10 +2410,11 @@ void SpectralOverlay::paint (juce::Graphics& g)
     const bool fading = e < 0.999f;
     if (fading) g.beginTransparencyLayer (e);
 
-    const float lit = buttonLit (onBtn), en = smooth01 (lit);
-    if (en > 0.01f)   // glow behind the ON key
+    for (auto* b : { &onBtn, &tiltBtn })   // glow behind a lit key
     {
-        const auto r = onBtn.getBounds().toFloat().reduced (2.f);
+        const float en = smooth01 (buttonLit (*b));
+        if (en <= 0.01f) continue;
+        const auto r = b->getBounds().toFloat().reduced (2.f);
         for (int i = 6; i >= 1; --i)
         {
             const float t = (float) i / 6.f;

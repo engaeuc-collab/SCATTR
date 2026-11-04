@@ -6,23 +6,27 @@
 #include <vector>
 
 // ---------------------------------------------------------------------------------------------
-// Spectral gate: every FFT bin gets its own gate.
+// Spectral gate: "only allow frequency components above or below a particular cut-off amplitude".
 //
-//  * sqrt-Hann analysis + synthesis windows, 4x overlap (75 %), so the overlap-add sums back to unity
-//  * both channels go through ONE complex FFT (left = real part, right = imaginary part)
-//  * the two channels are fully linked: each bin's level is the louder of the two, and the same gain is
-//    applied to both, so the stereo image never wobbles
-//  * a bin is "open" when its level is above the threshold curve (soft knee). Closed bins are pushed down
-//    by `range` dB instead of being cut dead, so the gate can be anything from a gentle hush to a hard mute
-//  * per-bin hold keeps a bin open for a moment after it falls quiet (stops flutter on decaying tails)
-//  * per-bin attack (opening) / release (closing), smoothed in dB once per hop
-//  * "smooth" lets every open bin spread its openness to its neighbours along a sloping skirt (linear in dB).
-//    Peaks stay fully open, but the edges of open regions turn soft instead of leaving hard spectral holes
-//    around each partial, which is what makes a bin-by-bin gate sound hollow and watery
-//  * the dry path is delayed by the same latency, so the mix control never combs
+// The signal is split into FFT bins. Every bin is measured against the cutoff amplitude:
+//   * a bin at or above the cutoff is STRONG, a bin below it is WEAK
+//   * the BALANCE control decides how much of each side is let through:
+//        0.0  only the weak bins pass   (the loud parts are removed, what is left is the quiet "air")
+//        0.5  everything passes         (the gate is neutral)
+//        1.0  only the strong bins pass (a classic gate: everything under the cutoff is removed)
+//     in between, the side that is being pushed back fades out linearly
+//   * TILT slants the cutoff across the spectrum (0.5 = flat). Towards 1 the cutoff rises with frequency, so
+//     the highs are gated harder; towards 0 it falls with frequency, so the lows are. It only acts while
+//     tilt is enabled.
 //
-// Latency is exactly the window size (see getLatency()). Everything is pre-allocated for the largest
-// window, so changing the window size on the audio thread never allocates.
+// The decision is made fresh for every bin of every frame: no attack, release or hold, exactly like the
+// gate it is modelled on. That is what gives it its characteristic broken-up, "spectral" sound.
+//
+// Engine: sqrt-Hann analysis + synthesis windows with 4x overlap (so the overlap-add sums back to unity),
+// both channels through ONE complex FFT (left = real part, right = imaginary part). The two channels are
+// fully linked: each bin's level is the louder of the two and the same gain is applied to both, so the
+// stereo image never wobbles. Latency is exactly the window size (see getLatency()). Everything is
+// pre-allocated for the largest window, so changing the window size on the audio thread never allocates.
 // ---------------------------------------------------------------------------------------------
 class SpectralGate
 {
@@ -32,30 +36,30 @@ public:
     static constexpr int overlap = 4;
     static constexpr int numBands = 64;                           // analyzer bands (log spaced)
     static constexpr float fMinHz = 20.f, fMaxHz = 20000.f;       // analyzer range
+    static constexpr float tiltPivotHz = 1000.f;                  // the cutoff keeps its set value here, whatever the tilt
+    static constexpr float maxTiltDbPerOct = 9.f;                 // tilt 0 / 1 = -9 / +9 dB per octave
 
     struct Params
     {
-        float mix = 1.f;            // 0..1
-        float outGainDb = 0.f;
-        float thrDb = -60.f;        // threshold at the centre frequency; 0 dB = a full-scale sine in one bin
-        float centerHz = 1000.f;
-        float slope = -3.f;         // dB per octave around the centre
-        float curve = 0.f;          // dB per octave^2
-        float rangeDb = -40.f;      // how far a closed bin is pushed down (<= 0)
-        float holdMs = 30.f;        // a bin stays open this long after it drops below the threshold
-        float kneeDb = 6.f;         // width of the soft transition around the threshold
-        float smooth = 0.25f;       // 0..1: how far open bins spread their openness to the neighbouring bins
-        float attackMs = 5.f;       // how fast a bin opens
-        float releaseMs = 100.f;    // how fast a bin closes
-        int order = 11;             // window = 2^order
+        float cutoffDb = -44.4f;    // cutoff amplitude; 0 dB = a full-scale sine in one bin
+        float balance = 0.7f;       // 0..1: 0 = only weak bins pass, 0.5 = all pass, 1 = only strong bins pass
+        bool  tiltOn = false;
+        float tilt = 0.5f;          // 0..1, 0.5 = flat
+        int   order = 11;           // window = 2^order
     };
 
-    // The threshold at a frequency (shared with the UI so the curve it draws is the real one)
+    // The cutoff at a frequency (shared with the UI so the curve it draws is the real one)
     static float thresholdDb (const Params& p, float hz)
     {
-        const float o = std::log2 (std::max (hz, 1.f) / std::max (p.centerHz, 1.f));
-        return p.thrDb + p.slope * o + p.curve * o * o;
+        float t = p.cutoffDb;
+        if (p.tiltOn)
+            t += (p.tilt - 0.5f) * 2.f * maxTiltDbPerOct * std::log2 (std::max (hz, 1.f) / tiltPivotHz);
+        return t;
     }
+
+    // Linear gain of the weak bins / the strong bins for a balance setting
+    static float weakGain (const Params& p)   { return std::min (1.f, 2.f * (1.f - clamp01 (p.balance))); }
+    static float strongGain (const Params& p) { return std::min (1.f, 2.f * clamp01 (p.balance)); }
 
     SpectralGate()
     {
@@ -69,8 +73,7 @@ public:
         }
         for (auto* v : { &inL, &inR, &accL, &accR, &re, &im, &win }) v->assign ((size_t) maxN, 0.f);
         rev.assign ((size_t) maxN, 0);
-        for (auto* v : { &gDb, &gApp, &lvDb, &outDb, &holdLeft }) v->assign ((size_t) maxN / 2 + 1, 0.f);
-        heldOpen.assign ((size_t) maxN / 2 + 1, 1.f);
+        for (auto* v : { &lvDb, &outDb }) v->assign ((size_t) maxN / 2 + 1, 0.f);
         for (auto& a : dispIn)  a.store (-200.f);
         for (auto& a : dispOut) a.store (-200.f);
         setOrder (11);
@@ -97,18 +100,13 @@ public:
         const bool stereo = R != nullptr;
         const int mask = N - 1;
         const float enUp = 1.f / (float) N, enDown = 1.f / std::max (16.f, 0.02f * (float) sr);
-        const float outLin = std::pow (10.f, p.outGainDb / 20.f);
-        const float mixT = std::min (1.f, std::max (0.f, p.mix));
 
         const bool running = on || en > 0.f;
         if (running && ! wasRunning)
         {
             std::fill (accL.begin(), accL.begin() + N, 0.f);
             std::fill (accR.begin(), accR.begin() + N, 0.f);
-            resetGates();
             counter = 0;
-            mixSm = mixT;
-            gainSm = outLin;
         }
         wasRunning = running;
 
@@ -116,7 +114,6 @@ public:
         {
             const float xl = L[i], xr = stereo ? R[i] : 0.f;
 
-            const float dl = inL[(size_t) inPos], dr = inR[(size_t) inPos];   // the input from exactly N samples ago
             inL[(size_t) inPos] = xl;
             inR[(size_t) inPos] = xr;
             inPos = (inPos + 1) & mask;
@@ -131,17 +128,13 @@ public:
             if (++counter >= hop)
             {
                 counter = 0;
-                processFrame (p, stereo, mixSm);
+                processFrame (p, stereo);
             }
 
-            mixSm += (mixT - mixSm) * 0.002f;
-            gainSm += (outLin - gainSm) * 0.002f;
             en = on ? std::min (1.f, en + enUp) : std::max (0.f, en - enDown);
 
-            const float cl = (dl * (1.f - mixSm) + wl * mixSm) * gainSm;
-            const float cr = (dr * (1.f - mixSm) + wr * mixSm) * gainSm;
-            L[i] = xl + (cl - xl) * en;
-            if (stereo) R[i] = xr + (cr - xr) * en;
+            L[i] = xl + (wl - xl) * en;
+            if (stereo) R[i] = xr + (wr - xr) * en;
         }
     }
 
@@ -150,12 +143,7 @@ public:
     std::atomic<unsigned> frames { 0 };
 
 private:
-    void resetGates()
-    {
-        std::fill (gDb.begin(), gDb.end(), 0.f);          // every gate starts fully open
-        std::fill (heldOpen.begin(), heldOpen.end(), 1.f);
-        std::fill (holdLeft.begin(), holdLeft.end(), 0.f);
-    }
+    static float clamp01 (float v) { return std::min (1.f, std::max (0.f, v)); }
 
     void setOrder (int o)
     {
@@ -183,7 +171,6 @@ private:
         }
 
         for (auto* v : { &inL, &inR, &accL, &accR }) std::fill (v->begin(), v->end(), 0.f);
-        resetGates();
         inPos = accPos = counter = 0;
 
         // analyzer band -> bin map
@@ -229,18 +216,7 @@ private:
         }
     }
 
-    // 0 = fully closed, 1 = fully open. `over` is how far the level sits above the threshold (dB).
-    // Across the knee it follows a smoothstep, so the gate eases open instead of snapping.
-    static float openAmount (float over, float knee)
-    {
-        if (knee < 0.01f) return over >= 0.f ? 1.f : 0.f;
-        const float x = (over + 0.5f * knee) / knee;
-        if (x <= 0.f) return 0.f;
-        if (x >= 1.f) return 1.f;
-        return x * x * (3.f - 2.f * x);
-    }
-
-    void processFrame (const Params& p, bool stereo, float mixNow)
+    void processFrame (const Params& p, bool stereo)
     {
         const int mask = N - 1;
         for (int j = 0; j < N; ++j)
@@ -253,15 +229,9 @@ private:
 
         const int half = N / 2;
         const float binHz = (float) sr / (float) N;
-        const float hopSec = (float) hop / (float) sr;
-        const float aC = std::exp (-hopSec / (0.001f * std::max (0.1f, p.attackMs)));    // opening
-        const float rC = std::exp (-hopSec / (0.001f * std::max (0.1f, p.releaseMs)));   // closing
-        const float range = std::min (0.f, p.rangeDb);
-        const float holdSec = 0.001f * std::max (0.f, p.holdMs);
-        const float kn = p.kneeDb;
-        const float mix = std::min (1.f, std::max (0.f, mixNow));
+        const float gWeak = weakGain (p), gStrong = strongGain (p);
+        const float dbWeak = 20.f * std::log10 (gWeak + 1.0e-9f), dbStrong = 20.f * std::log10 (gStrong + 1.0e-9f);
 
-        // pass 1: measure every bin and move its gate (in dB) towards open or closed
         for (int k = 0; k <= half; ++k)
         {
             const int k2 = (N - k) & (N - 1);
@@ -271,45 +241,16 @@ private:
             const float rr = 0.5f * (zi - ci), ri = -0.5f * (zr - cr);         // right channel's bin
             const float mag = std::sqrt (std::max (lr * lr + li * li, rr * rr + ri * ri)) * norm;
             const float lv = 20.f * std::log10 (mag + 1.0e-9f);
-            lvDb[(size_t) k] = lv;
 
-            // (the DC bin is gated like the rest, using the first bin's threshold: left open it would leak
-            //  about 1/N of any noise's power straight through, which puts a floor under the range)
-            const float o = openAmount (lv - thresholdDb (p, (float) std::max (k, 1) * binHz), kn);
-            float& held = heldOpen[(size_t) k];
-            float& hl   = holdLeft[(size_t) k];
-            if (o >= held)       { held = o; hl = holdSec; }   // louder than before: reopen and restart the hold
-            else if (hl > 0.f)   hl -= hopSec;                   // quieter, but still holding
-            else                 held = o;                       // hold is over: follow the level down
-            const float open = held;
+            // strong or weak? (the DC bin is judged with the first bin's cutoff)
+            const bool strong = lv >= thresholdDb (p, (float) std::max (k, 1) * binHz);
+            const float gl = strong ? gStrong : gWeak;
 
-            const float target = range * (1.f - open);   // 0 dB when open, `range` when closed
-            float& g = gDb[(size_t) k];
-            g += (target - g) * (1.f - (target > g ? aC : rC));       // rising = opening = attack
-        }
-
-        // optional skirts: every bin's gain can lift its neighbours, falling by `fall` dB per bin of distance, so
-        // it reaches the closed level after `rad` bins. Two linear scans (up, then down the spectrum) give the
-        // exact "max over neighbours" without a search. It works on a copy: the stored gains stay un-spread.
-        const int rad = (int) std::lround (std::min (1.f, std::max (0.f, p.smooth)) * 16.f * (float) N / 2048.f);
-        std::copy (gDb.begin(), gDb.begin() + half + 1, gApp.begin());
-        if (rad > 0 && range < -0.01f)
-        {
-            const float fall = -range / (float) (rad + 1);
-            for (int k = 1; k <= half; ++k)    gApp[(size_t) k] = std::max (gApp[(size_t) k], gApp[(size_t) k - 1] - fall);
-            for (int k = half - 1; k >= 0; --k) gApp[(size_t) k] = std::max (gApp[(size_t) k], gApp[(size_t) k + 1] - fall);
-        }
-
-        // pass 2: apply the gains
-        for (int k = 0; k <= half; ++k)
-        {
-            const int k2 = (N - k) & (N - 1);
-            const float gl = std::pow (10.f, gApp[(size_t) k] / 20.f);
             re[(size_t) k] *= gl;  im[(size_t) k] *= gl;
             if (k > 0 && k < half) { re[(size_t) k2] *= gl; im[(size_t) k2] *= gl; }
 
-            // what the listener ends up with in this bin: dry and processed blended, then the output gain
-            outDb[(size_t) k] = lvDb[(size_t) k] + 20.f * std::log10 ((1.f - mix) + mix * gl + 1.0e-9f) + p.outGainDb;
+            lvDb[(size_t) k]  = lv;
+            outDb[(size_t) k] = lv + (strong ? dbStrong : dbWeak);
         }
 
         fft (true);
@@ -350,12 +291,10 @@ private:
     double sr = 44100.0;
     int order = -1, N = 2048, hop = 512;
     int inPos = 0, accPos = 0, counter = 0;
-    float norm = 1.f, en = 0.f, mixSm = 1.f, gainSm = 1.f;
+    float norm = 1.f, en = 0.f;
     bool wasRunning = false;
 
-    std::vector<float> twC, twS, inL, inR, accL, accR, re, im, win;
-    std::vector<float> gDb, gApp, lvDb, outDb;     // per-bin gate gain (dB), the skirted copy that is applied, input level, output level
-    std::vector<float> heldOpen, holdLeft;          // per-bin hold state: how open it is held, seconds of hold left
+    std::vector<float> twC, twS, inL, inR, accL, accR, re, im, win, lvDb, outDb;
     std::vector<int> rev;
 
     int bandLo[numBands] {}, bandHi[numBands] {}, bandI0[numBands] {};

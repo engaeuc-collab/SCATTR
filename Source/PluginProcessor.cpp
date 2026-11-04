@@ -67,22 +67,10 @@ juce::AudioProcessorValueTreeState::ParameterLayout makeLayout()
 
     // spectral gate (the pop-out window). Off by default.
     p.push_back (std::make_unique<juce::AudioParameterBool> (juce::ParameterID { "son", 1 }, "Spectral Gate On", false));
-    add ("smix",     "Gate Mix",            0.f,   1.f,    1.f,   1.f);
-    add ("sgain",    "Gate Output",        -24.f,  24.f,   0.f,   1.f);
-    add ("sthr",     "Gate Threshold",     -90.f,  0.f,   -60.f,  1.f);
-    {   // centre of the threshold tilt: 1 kHz sits in the middle of the knob
-        NR r (20.f, 20000.f);
-        r.setSkewForCentre (1000.f);
-        p.push_back (std::make_unique<juce::AudioParameterFloat> (juce::ParameterID { "scen", 1 }, "Gate Center", r, 1000.f));
-    }
-    add ("sslope",   "Gate Slope",         -6.f,   6.f,   -3.f,   1.f);
-    add ("scurve",   "Gate Curve",         -3.f,   3.f,    0.f,   1.f);
-    add ("srange",   "Gate Range",         -90.f,  0.f,   -40.f,  1.f);     // how far closed bins are pushed down
-    add ("shold",    "Gate Hold",           0.f,   500.f,  30.f,  0.5f);
-    add ("sknee",    "Gate Knee",           0.f,   24.f,    6.f,  1.f);
-    add ("ssmooth",  "Gate Smooth",         0.f,   1.f,    0.25f, 1.f);     // blur of the gains across neighbouring bins
-    add ("satk",     "Gate Attack",         1.f,   250.f,   5.f,  0.4f);
-    add ("srel",     "Gate Release",        10.f,  2000.f, 100.f, 0.4f);
+    add ("sthr",     "Gate Cutoff Amplitude", -90.f, 0.f,  -44.4f, 1.f);   // bins above it are "strong", bins below it are "weak"
+    add ("sbal",     "Gate Weak/Strong Balance", 0.f, 1.f,  0.7f,  1.f);   // 0 = only weak bins pass, 0.5 = all pass, 1 = only strong bins pass
+    p.push_back (std::make_unique<juce::AudioParameterBool> (juce::ParameterID { "stilton", 1 }, "Gate Enable Tilt", false));
+    add ("stilt",    "Gate Tilt",           0.f,   1.f,    0.5f,  1.f);       // slants the cutoff across frequency (0.5 = flat)
     p.push_back (std::make_unique<juce::AudioParameterChoice> (
         juce::ParameterID { "swin", 1 }, "Gate Window", juce::StringArray { "512", "1024", "2048", "4096" }, 2));
 
@@ -773,18 +761,10 @@ void ScattrProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::Midi
     // spectral gate: the last stage, so it shapes everything the plugin makes
     {
         SpectralGate::Params sp;
-        sp.mix        = prm ("smix");
-        sp.outGainDb  = prm ("sgain");
-        sp.thrDb      = prm ("sthr");
-        sp.centerHz   = prm ("scen");
-        sp.slope      = prm ("sslope");
-        sp.curve      = prm ("scurve");
-        sp.rangeDb    = prm ("srange");
-        sp.holdMs     = prm ("shold");
-        sp.kneeDb     = prm ("sknee");
-        sp.smooth     = prm ("ssmooth");
-        sp.attackMs   = prm ("satk");
-        sp.releaseMs  = prm ("srel");
+        sp.cutoffDb   = prm ("sthr");
+        sp.balance    = prm ("sbal");
+        sp.tiltOn     = prm ("stilton") > 0.5f;
+        sp.tilt       = prm ("stilt");
         sp.order      = SpectralGate::minOrder + juce::jlimit (0, 3, (int) prm ("swin"));
         const bool sOn = prm ("son") > 0.5f;
 

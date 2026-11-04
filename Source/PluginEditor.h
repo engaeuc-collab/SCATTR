@@ -286,7 +286,7 @@ private:
     juce::Rectangle<float> plotRect() const { return analyzer().reduced (12.f, 12.f).withTrimmedBottom (34.f).withTrimmedLeft (18.f); }
 
     juce::Rectangle<float> card() const      { return { 14.f, 40.f, 752.f, 490.f }; }
-    juce::Rectangle<float> group (int row) const { return { 26.f, 98.f + (float) row * 138.f, 400.f, 130.f }; }
+    juce::Rectangle<float> group (int row) const { return { 26.f, 98.f + (float) row * 208.f, 400.f, 196.f }; }   // two roomy cards: "gate" and "tilt"
     juce::Rectangle<float> analyzer() const  { return { 438.f, 98.f, 316.f, 406.f }; }
 
     struct Knob
@@ -296,15 +296,15 @@ private:
         std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> attach;
     };
 
-    static constexpr int numKnobs = 12;
+    static constexpr int numKnobs = 3;   // cutoff, weak/strong balance, tilt
 
     ScattrPanel& panel;
     ScattrProcessor& proc;
 
     std::array<Knob, (size_t) numKnobs> knobs;
-    juce::ToggleButton onBtn { "ON" };
-    std::unique_ptr<juce::AudioProcessorValueTreeState::ButtonAttachment> onAttach;
-    juce::TextButton winBtn { "WINDOW" }, doneBtn { "DONE" };
+    juce::ToggleButton onBtn { "ON" }, tiltBtn { "ENABLE TILT" };
+    std::unique_ptr<juce::AudioProcessorValueTreeState::ButtonAttachment> onAttach, tiltAttach;
+    juce::TextButton winBtn { "2048" }, doneBtn { "DONE" };   // winBtn cycles the FFT size
 
     juce::Image sharp, backdrop, cardImg;   // live snapshot (only used while fading in), then two cached layers
     static constexpr float layerScale = 2.f;
