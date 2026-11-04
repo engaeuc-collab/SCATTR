@@ -23,7 +23,7 @@ juce_add_plugin(Scattr
     PLUGIN_CODE Sctr
     FORMATS VST3
     VST3_CATEGORIES Instrument Synth
-    PRODUCT_NAME "SCATTR")
+    PRODUCT_NAME "Nature")
 
 # --- embedded assets -------------------------------------------------------------------------
 # Textures/*.wav -> looping layers for the WIND knob. Re-run CMake after adding or replacing a file.
