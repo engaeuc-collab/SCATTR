@@ -333,6 +333,7 @@ private:
     int playIdx = -1;       // sample the engine is playing right now
     int dragHandle = 0;     // 0 none, 1 start bar, 2 end bar
     bool playing = false, shownPlaying = false;
+    int focusTick = 0;      // counts timer ticks between keyboard-focus checks
     float playGlow = 0.f;   // 0..1: the soft light under the waveform while a sample sounds
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (ScattrPanel)
@@ -412,6 +413,7 @@ private:
     std::vector<Snap> undoStack, redoStack;
     Snap dragBefore;
     int lastWheelBand = -1;
+    float slopeWheelAcc = 0.f;   // shift + scroll: collects wheel movement until it adds up to one slope step
     double lastWheelMs = 0.0;
     static juce::Colour bandColour (int i);
     void computeSpectrum (const std::atomic<float>* ring, std::vector<float>& out, std::vector<float>& smoothed, bool stale);

@@ -595,6 +595,7 @@ void ScattrProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::Midi
                         const Sample& cs = *samples[(size_t) cur];
                         const double regLen = juce::jmax (1.0, (double) (cs.endN.load() - cs.startN.load()) * (double) cs.length);
                         playhead += (double) speed * cs.sampleRate / (sr * regLen);
+                        playhead -= std::floor (playhead);   // reached the end of the region: loop back to the start for as long as the key is held
                     }
                 }
             }
