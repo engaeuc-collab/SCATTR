@@ -1,5 +1,8 @@
 #include "PluginEditor.h"
 
+// Hands the keyboard back to the host's own window (defined at the end of this file; does nothing off Windows)
+static void activateHostWindow (juce::Component&);
+
 using namespace Scat;
 
 namespace
@@ -174,11 +177,11 @@ const Tip kTips[42] = {
     { "seed size",     "Length of each grain. Short is gritty, long is smooth and recognisable." },
     { "rain",          "How many grains fall per second. More makes a thicker, denser cloud." },
     { "speed",         "How fast the playhead travels through each sample. 1x is normal; pitch stays put." },
-    { "wind",          "Mixes in a looping wind texture underneath the grains." },
+    { "reverse",       "Blends in the same grains played backwards. Left is all forwards, right is all reversed." },
     { "scatter",       "How far grains stray from the playhead. Low is focused, high is wide." },
     { "bloom",         "Seconds each sample plays before the next one, when no key is held." },
     { "rest",          "Silence between samples, in seconds, when no key is held." },
-    { "sun",           "Overall volume of the grains." },
+    { "master",        "The overall output volume, after every effect." },
     { "(retired)",     "" },
     { "(retired)",     "" },
     { "(retired)",     "" },
@@ -751,8 +754,8 @@ ScattrPanel::ScattrPanel (ScattrProcessor& p) : proc (p)
     // dp = digits shown under the knob (whole numbers for big ranges, 0.00 style for the small ones)
     static const Def defs[30] = {
         { "size", "seed size", 0 }, { "dens", "rain", 0 }, { "speed", "speed", 2 },
-        { "wind", "wind", 2 }, { "spray", "scatter", 2 }, { "hold", "bloom", 2 },
-        { "gap", "rest", 2 }, { "amp", "sun", 2 },
+        { "reverse", "reverse", 2 }, { "spray", "scatter", 2 }, { "hold", "bloom", 2 },
+        { "gap", "rest", 2 }, { "master", "master", 2 },   // 7: lives on the settings tab
         { "", "", 0 }, { "", "", 0 }, { "", "", 0 },   // 8..10: the old filter's knobs (retired)
         { "dnote", "time", -1 }, { "dfb", "feedback", 2 }, { "dmix", "echo mix", 2 },
         { "rsize", "size", 2 }, { "rdamp", "damp", 2 }, { "rmix", "reverb mix", 2 },
@@ -946,11 +949,14 @@ ScattrPanel::ScattrPanel (ScattrProcessor& p) : proc (p)
     {
         chooser = std::make_unique<juce::FileChooser> ("Select samples", juce::File(),
                                                        "*.wav;*.aif;*.aiff;*.flac;*.ogg;*.mp3");
+        juce::Component::SafePointer<ScattrPanel> safe (this);
         chooser->launchAsync (juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectMultipleItems,
-                              [this] (const juce::FileChooser& fc)
+                              [safe] (const juce::FileChooser& fc)
                               {
-                                  for (auto& f : fc.getResults()) proc.addSampleFile (f);
-                                  repaint();
+                                  if (safe == nullptr) return;   // the editor was closed while the dialog was open
+                                  for (auto& f : fc.getResults()) safe->proc.addSampleFile (f);
+                                  safe->repaint();
+                                  safe->restoreFocusSoon();   // the native dialog took the keyboard; give it back
                               });
     };
     clearBtn.onClick = [this] { proc.clearSamples(); shown = -1; pinned = -1; listOff = 0; repaint(); };
@@ -1016,9 +1022,11 @@ void ScattrPanel::setTab (int t)
     const bool grains = (t == 0), fx = (t == 1), sett = (t == 2);
     for (size_t i = 0; i < knobs.size(); ++i)
     {
-        const bool vis = ((grains && onGrainsTab (i)) || (fx && ! onGrainsTab (i))) && i != 18 && ! retiredKnob (i);   // 18 = "cycle": retired, samples now play all the way through
+        const bool master = (i == 7);
+        const bool vis = master ? sett
+                                : ((grains && onGrainsTab (i)) || (fx && ! onGrainsTab (i))) && i != 18 && ! retiredKnob (i);   // 18 = "cycle": retired, samples now play all the way through
         knobs[i].slider.setVisible (vis);
-        knobs[i].label.setVisible (vis);
+        knobs[i].label.setVisible (vis && ! master);
     }
     spaceBtn.setVisible (fx);
     for (auto* b : { &donBtn, &ronBtn, &ponBtn, &conBtn }) b->setVisible (fx);
@@ -1060,18 +1068,18 @@ void ScattrPanel::resized()
 
     // grains tab: two rows of six equal columns, so nothing is left hanging empty at the right-hand end
     {
-        static const size_t row1[6] = { 0, 1, 2, 3, 4, 21 };      // seed size, rain, speed, wind, scatter, pan spread
-        static const size_t row2[5] = { 5, 6, 19, 7, 17 };         // bloom, rest, random, sun, master tune
+        static const size_t row1[6] = { 0, 1, 2, 3, 4, 21 };      // seed size, rain, speed, reverse, scatter, pan spread
+        static const size_t row2[4] = { 5, 6, 19, 17 };            // bloom, rest, random, master tune
         for (int k = 0; k < 6; ++k) place (row1[k], grainPanel(), 6, k, 88);
-        for (int k = 0; k < 5; ++k) place (row2[k], motionPanel(), 6, k, 88);
+        for (int k = 0; k < 4; ++k) place (row2[k], motionPanel(), 5, k, 88);
 
-        // the last column of the motion row holds the three keys, stacked and level with the knobs
+        // the last of the motion row's five columns holds the three keys, stacked
         const auto mp = motionPanel();
-        const int sw = (int) ((mp.getWidth() - 24.f) / 6.f);
-        const int bw = 104, bx = (int) mp.getX() + 12 + 5 * sw + (sw - bw) / 2;
-        droneBtn.setBounds (bx, (int) mp.getY() + 36,  bw, 26);
-        tuneBtn.setBounds  (bx, (int) mp.getY() + 68,  bw, 26);
-        specBtn.setBounds  (bx, (int) mp.getY() + 100, bw, 26);
+        const int sw = (int) ((mp.getWidth() - 24.f) / 5.f);
+        const int bw = 112, bx = (int) mp.getX() + 12 + 4 * sw + (sw - bw) / 2;
+        droneBtn.setBounds (bx, (int) mp.getY() + 28, bw, 26);
+        tuneBtn.setBounds  (bx, (int) mp.getY() + 60, bw, 26);
+        specBtn.setBounds  (bx, (int) mp.getY() + 92, bw, 26);
     }
 
     // fx tab: the equalizer on top, then two rows of effect cards (see fxPanel() for the geometry)
@@ -1101,12 +1109,14 @@ void ScattrPanel::resized()
         spaceBtn.setBounds (ronBtn.getX() - 6 - 70, ronBtn.getY(), 70, 22);
     }
 
-    // settings tab: each row's control sits at the right-hand end of the row
-    for (int i = 0; i < 4; ++i)
+    // settings tab: each row's control sits at the right-hand end of the row (row 0 is the master knob)
+    for (int i = 0; i < 5; ++i)
     {
         const auto row = settingsRow (i).toNearestInt();
-        const juce::Rectangle<int> c (row.getRight() - 12 - 132, row.getY() + 25, 132, 34);
-        if (i < 3) setBtn[(size_t) i].setBounds (c); else startBtn.setBounds (c);
+        const juce::Rectangle<int> c (row.getRight() - 12 - 132, row.getY() + 21, 132, 34);
+        if (i == 0)      knobs[7].slider.setBounds (row.getRight() - 12 - 132, row.getY(), 132, row.getHeight());
+        else if (i < 4)  setBtn[(size_t) (i - 1)].setBounds (c);
+        else             startBtn.setBounds (c);
     }
 }
 
@@ -1115,6 +1125,7 @@ void ScattrPanel::filesDropped (const juce::StringArray& files, int, int)
     if (spectral != nullptr && spectral->isVisible()) return;
     for (auto& f : files) proc.addSampleFile (juce::File (f));
     repaint();
+    restoreFocusSoon();
 }
 
 int ScattrPanel::hitHandle (float x) const
@@ -1136,6 +1147,26 @@ float ScattrPanel::sproutX() const { return titleX() + titleWidth() + sproutGap;
 bool ScattrPanel::isInterestedInFileDrag (const juce::StringArray&)
 {
     return spectral == nullptr || ! spectral->isVisible();   // nothing behind the spectral window may be dropped on
+}
+
+// A native file dialog (or a drag from the desktop) takes keyboard focus away from the plugin's window and the operating
+// system does not always hand it back, so the next key press never reached the host's keyboard-to-MIDI. Bring the plugin's window
+// forward and take the focus again right away, and once more a moment later, after the dialog has finished closing.
+void ScattrPanel::restoreFocus()
+{
+    if (! isShowing()) return;
+    activateHostWindow (*this);   // re-activate the host's window, exactly what clicking the top of the plugin did by hand
+    if (auto* top = getTopLevelComponent()) top->toFront (true);
+    if (auto* peer = getPeer()) peer->grabFocus();
+    grabKeyboardFocus();
+}
+
+void ScattrPanel::restoreFocusSoon()
+{
+    restoreFocus();
+    juce::Component::SafePointer<ScattrPanel> safe (this);
+    for (int ms : { 120, 450 })
+        juce::Timer::callAfterDelay (ms, [safe] { if (safe != nullptr) safe->restoreFocus(); });
 }
 
 bool ScattrPanel::keyPressed (const juce::KeyPress& k)
@@ -1369,6 +1400,7 @@ void ScattrPanel::timerCallback()
 
     playing  = proc.uiPlaying.load();
     shownPlaying = playing && playIdx == shown;
+    playGlow += ((playing ? 1.f : 0.f) - playGlow) * (playing ? 0.25f : 0.07f);   // lights quickly, fades slowly
     idleFade += ((shownPlaying ? 0.f : 1.f) - idleFade) * 0.2f;
     progress = proc.uiProgress.load();
 
@@ -2137,6 +2169,21 @@ void ScattrPanel::paintWave (juce::Graphics& g)
         }
     }
 
+    // a faint glow under the waveform card while a sample is sounding
+    if (playGlow > 0.01f)
+    {
+        const float a = smooth01 (playGlow) * (animOn() ? 0.86f + 0.14f * std::sin (anim * 2.4f) : 1.f);
+        const float x0 = wr.getX() + 16.f, x1 = wr.getRight() - 16.f, y0 = wr.getBottom();
+
+        g.setGradientFill (juce::ColourGradient (pal.glow.withAlpha (0.26f * a), 0.f, y0 - 1.f, pal.glow.withAlpha (0.f), 0.f, y0 + 20.f, false));
+        g.fillRoundedRectangle (x0, y0 - 1.f, x1 - x0, 21.f, 10.f);
+
+        juce::ColourGradient thread (pal.glow.withAlpha (0.f), x0, 0.f, pal.glow.withAlpha (0.f), x1, 0.f, false);   // a thin bright thread along the lower edge
+        thread.addColour (0.5, pal.glow.withAlpha (0.55f * a));
+        g.setGradientFill (thread);
+        g.fillRect (x0, y0 - 0.5f, x1 - x0, 1.5f);
+    }
+
     // status line under the waveform
     g.setFont (serif (14.f, true));
     g.setColour (pal.dim.withAlpha (1.f - 0.3f * idleFade * (0.5f + 0.5f * std::sin (anim * 1.1f))));
@@ -2231,11 +2278,11 @@ void ScattrPanel::paintStatic (juce::Graphics& g)
     else
     {
         drawGlass (g, settingsPanel(), 12.f, 0.55f);
-        for (int i = 0; i < 3; ++i)   // a hairline between the rows
+        for (int i = 0; i < 4; ++i)   // a hairline between the rows
         {
             const auto r = settingsRow (i);
             g.setColour (pal.line.withAlpha (0.55f));
-            g.drawHorizontalLine ((int) r.getBottom() + 4, r.getX() + 6.f, r.getRight() - 6.f);
+            g.drawHorizontalLine ((int) r.getBottom() + 2, r.getX() + 6.f, r.getRight() - 6.f);
         }
     }
 }
@@ -2388,22 +2435,23 @@ void ScattrPanel::paintLabels (juce::Graphics& g)
     {
         drawGroupTitle (g, settingsPanel(), "hollow: settings");
         struct Row { const char* title; const char* note; };
-        static const Row rows[4] = {
+        static const Row rows[5] = {
+            { "master",             "The overall output volume, applied after every effect." },
             { "disable tips",       "Hides the little notes that appear when you rest the pointer on a knob or button." },
             { "disable animations", "Stops the swaying, breathing, glints and drifting lights. The waveform and meters still move." },
             { "disable themes",     "Turns the whole plugin black and white. The theme button is locked until this is switched off." },
             { "startup size",       "How big the window is when it opens. Last used keeps whatever zoom you picked most recently." } };
-        for (int i = 0; i < 4; ++i)
+        for (int i = 0; i < 5; ++i)
         {
             const auto r = settingsRow (i);
             g.setFont (serif (20.f));
             g.setColour (juce::Colours::black.withAlpha (0.45f));
-            g.drawText (rows[i].title, juce::Rectangle<float> (r.getX() + 15.f, r.getY() + 13.f, 340.f, 26.f), juce::Justification::centredLeft);
+            g.drawText (rows[i].title, juce::Rectangle<float> (r.getX() + 15.f, r.getY() + 9.f, 340.f, 26.f), juce::Justification::centredLeft);
             g.setColour (pal.ink);
-            g.drawText (rows[i].title, juce::Rectangle<float> (r.getX() + 14.f, r.getY() + 12.f, 340.f, 26.f), juce::Justification::centredLeft);
+            g.drawText (rows[i].title, juce::Rectangle<float> (r.getX() + 14.f, r.getY() + 8.f, 340.f, 26.f), juce::Justification::centredLeft);
             g.setFont (serif (13.f, true));
             g.setColour (pal.dim);
-            g.drawFittedText (rows[i].note, juce::Rectangle<float> (r.getX() + 14.f, r.getY() + 42.f, r.getWidth() - 200.f, 34.f).toNearestInt(),
+            g.drawFittedText (rows[i].note, juce::Rectangle<float> (r.getX() + 14.f, r.getY() + 38.f, r.getWidth() - 200.f, 34.f).toNearestInt(),
                               juce::Justification::topLeft, 2);
         }
     }
@@ -4085,4 +4133,26 @@ void ScattrEditor::resized()
 {
     panel.setBounds (0, 0, ScattrPanel::baseW, ScattrPanel::baseH);
     panel.setTransform (juce::AffineTransform::scale ((float) getWidth() / (float) ScattrPanel::baseW));
+}
+
+// ---------------------------------------------------------------- host window focus
+
+#if JUCE_WINDOWS
+ #ifndef NOMINMAX
+  #define NOMINMAX
+ #endif
+ #ifndef WIN32_LEAN_AND_MEAN
+  #define WIN32_LEAN_AND_MEAN
+ #endif
+ #include <windows.h>
+#endif
+
+static void activateHostWindow ([[maybe_unused]] juce::Component& c)
+{
+   #if JUCE_WINDOWS
+    if (auto* peer = c.getPeer())
+        if (auto h = (HWND) peer->getNativeHandle())
+            if (HWND root = ::GetAncestor (h, GA_ROOT))
+                ::SetForegroundWindow (root);
+   #endif
 }

@@ -1,7 +1,6 @@
 #include "PluginProcessor.h"
 #include "PluginEditor.h"
 
-#include "TexturesData.h"   // embedded wind recordings (Textures/ folder)
 
 namespace
 {
@@ -23,14 +22,14 @@ juce::AudioProcessorValueTreeState::ParameterLayout makeLayout()
         r.setSkewForCentre (1.f);
         p.push_back (std::make_unique<juce::AudioParameterFloat> (juce::ParameterID { "speed", 1 }, "Speed", r, 1.f));
     }
-    add ("wind",  "Wind Texture", 0.f, 1.f,   0.f,   1.f);   // level of the looping texture layer
+    add ("reverse", "Reverse",    0.f, 1.f,   0.f,   1.f);   // 0 = all grains forward (dry), 1 = all reversed; in between both are heard
     add ("spray", "Spray",        0.f, 1.f,   0.1f,  1.f);
     add ("hold",  "Hold",         0.5f, 20.f, 4.f,   0.5f);
     add ("gap",   "Gap",          0.f, 5.f,   0.3f,  1.f);
     add ("cycle", "Key Cycle",    0.05f, 20.f, 1.5f, 0.5f);   // seconds per sample while a key is held
     add ("rand",  "Randomizer",   0.f, 1.f,   0.f,   1.f);     // chance that a grain comes from a random sample
     add ("width", "Random Pan",   0.f, 1.f,   0.5f,  1.f);   // per-grain random pan amount (id kept as "width" for old projects)
-    add ("amp",   "Amp",          0.f, 1.f,   0.7f,  1.f);
+    add ("master", "Master",      0.f, 1.5f,  1.f,   1.f);   // overall output level, applied after every effect
     add ("mtune", "Master Tune", -100.f, 100.f, 0.f, 1.f);   // cents
 
     // effects
@@ -123,18 +122,6 @@ juce::AudioProcessorValueTreeState::ParameterLayout makeLayout()
         juce::ParameterID { "swin", 1 }, "Gate Window", juce::StringArray { "512", "1024", "2048", "4096" }, 2));
 
     return { p.begin(), p.end() };
-}
-
-// linear-interpolated stereo read from a texture
-inline void readTexAt (const Texture& t, double pos, float& l, float& r)
-{
-    const int i = juce::jlimit (0, t.length - 1, (int) pos);
-    const int j = juce::jmin (i + 1, t.length - 1);
-    const float fr = (float) (pos - (double) i);
-    const float* d0 = t.data.getReadPointer (0);
-    const float* d1 = t.data.getNumChannels() > 1 ? t.data.getReadPointer (1) : d0;
-    l = d0[i] + (d0[j] - d0[i]) * fr;
-    r = d1[i] + (d1[j] - d1[i]) * fr;
 }
 
 // Estimates a sample's pitch (YIN) from its loudest sections.
@@ -238,48 +225,6 @@ ScattrProcessor::ScattrProcessor()
     }
     for (int i = 0; i <= 1024; ++i)
         env[i] = 0.5f - 0.5f * std::cos (juce::MathConstants<float>::twoPi * (float) i / 1024.f);
-    loadTextures();
-}
-
-// The wind layer is built from the audio files in the project's Textures/ folder (CMake embeds them).
-// Each file becomes one looping texture; the wind knob sets its level.
-void ScattrProcessor::loadTextures()
-{
-    for (int i = 0; i < TexturesData::namedResourceListSize; ++i)
-    {
-        int size = 0;
-        const char* data = TexturesData::getNamedResource (TexturesData::namedResourceList[i], size);
-        if (data == nullptr || size <= 0) continue;
-
-        std::unique_ptr<juce::AudioFormatReader> r (formats.createReaderFor (
-            std::make_unique<juce::MemoryInputStream> (data, (size_t) size, false)));
-        if (r == nullptr || r->lengthInSamples < 256) continue;
-
-        const int n = (int) juce::jmin<juce::int64> (r->lengthInSamples, (juce::int64) (r->sampleRate * 90.0));
-        Texture t;
-        t.sampleRate = r->sampleRate;
-        t.length = n;
-        t.data.setSize (juce::jmin (2, (int) r->numChannels), n);
-        t.data.clear();
-        r->read (&t.data, 0, n, 0, true, true);
-
-        double sum = 0.0;
-        float peak = 0.f;
-        for (int ch = 0; ch < t.data.getNumChannels(); ++ch)
-        {
-            const float* d = t.data.getReadPointer (ch);
-            for (int k = 0; k < t.length; ++k) { sum += (double) d[k] * d[k]; peak = juce::jmax (peak, std::abs (d[k])); }
-        }
-        const float rms = (float) std::sqrt (sum / (double) ((juce::int64) t.length * t.data.getNumChannels()));
-        if (rms < 1.0e-6f || peak < 1.0e-6f) continue;
-
-        // even out levels between textures (about -14 dBFS RMS, never clipping)
-        t.data.applyGain (juce::jmin (0.2f / rms, 0.95f / peak));
-
-        // wind is slow-moving, so hide the loop seam with a long (1.5 s) equal-power crossfade
-        t.xfade = juce::jmin ((int) (1.5 * t.sampleRate), t.length / 4);
-        textures.push_back (std::move (t));
-    }
 }
 
 void ScattrProcessor::prepareToPlay (double sampleRate, int samplesPerBlock)
@@ -308,9 +253,8 @@ void ScattrProcessor::prepareToPlay (double sampleRate, int samplesPerBlock)
     revR.assign ((size_t) juce::jmax (1, samplesPerBlock), 0.f);
     revActive = false;
 
-    texIdx = texNext = -1;
-    texPos = 0.0;
-    texLevel = 0.f;
+    masterSm.reset (sampleRate, 0.02);
+    masterSm.setCurrentAndTargetValue (1.f);
 
     {
         const juce::dsp::ProcessSpec ps { sampleRate, (juce::uint32) juce::jmax (1, samplesPerBlock), 2 };
@@ -471,9 +415,8 @@ void ScattrProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::Midi
     }
 
     auto prm = [this] (const char* id) { return apvts.getRawParameterValue (id)->load(); };
-    const float sizeMs = prm ("size"), dens = prm ("dens"), speed = prm ("speed"), wind = prm ("wind"),
-                spray = prm ("spray"), holdS = prm ("hold"), gapS = prm ("gap"), cycleS = prm ("cycle"), randAmt = prm ("rand"), width = prm ("width"),
-                amp = prm ("amp");
+    const float sizeMs = prm ("size"), dens = prm ("dens"), speed = prm ("speed"), reverse = prm ("reverse"),
+                spray = prm ("spray"), holdS = prm ("hold"), gapS = prm ("gap"), cycleS = prm ("cycle"), randAmt = prm ("rand"), width = prm ("width");
     const bool active = prm ("drone") > 0.5f || notesHeld > 0;
     juce::ignoreUnused (cycleS);   // the cycle knob is retired; held keys play each sample through
     const bool keyMode = notesHeld > 0;   // a key is down: the sample plays through once, then waits for the next key
@@ -484,7 +427,7 @@ void ScattrProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::Midi
     // Keep grains overlapping by at least 2x: short seeds at a low rain rate used to leave gaps and
     // sound choppy, so the rate is raised automatically as the seed shrinks.
     const float densEff = juce::jmax (dens, 2.0f / (sizeMs * 0.001f));
-    const float norm = amp / std::sqrt (juce::jmax (1.0f, densEff * sizeMs * 0.001f));
+    const float norm = 0.7f / std::sqrt (juce::jmax (1.0f, densEff * sizeMs * 0.001f));   // the master knob (after the effects) sets the overall level
     const float pitchOff = notesHeld > 0 ? (float) (heldNote - 60) : 0.f;
     const bool tuneOn = prm ("tune") > 0.5f;
     const float masterTune = prm ("mtune") * 0.01f;   // cents -> semitones
@@ -511,7 +454,6 @@ void ScattrProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::Midi
     static const double noteBeats[11] = { 0.125, 1.0 / 6.0, 0.25, 1.0 / 3.0, 0.5, 0.75, 2.0 / 3.0, 1.0, 1.5, 2.0, 4.0 };
     const int dIdx = juce::jlimit (0, 10, (int) prm ("dnote"));
     const float delaySamples = juce::jlimit (16.f, (float) (delaySize - 8), (float) (noteBeats[dIdx] * 60.0 / bpm * sr));
-    const float texCoef = 1.f - std::exp (-1.f / (0.25f * (float) sr));   // ~250 ms texture fades
     delayTimeSm.setTargetValue (delaySamples);
 
     float* L = buffer.getWritePointer (0);
@@ -522,10 +464,6 @@ void ScattrProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::Midi
         if (cur < 0 || cur >= (int) samples.size()) return;
         const int len0 = juce::jmin (sizeSamples, remaining);
         if (len0 <= 32) return;
-
-        Grain* slot = nullptr;
-        for (auto& g : grains) if (! g.active) { slot = &g; break; }
-        if (slot == nullptr) return;
 
         // randomizer: with probability `randAmt`, this grain is taken from a random enabled sample
         // instead of the current one (0 = never, 1 = every grain)
@@ -565,14 +503,29 @@ void ScattrProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::Midi
 
         // full knob = grains land anywhere from 10% to 90% across the field (never hard left/right), so it stays gentle
         const float pan = 0.5f + (rng.nextFloat() - 0.5f) * width * 0.8f;
-        slot->active = true;
-        slot->s = &s;
-        slot->pos = start;
-        slot->inc = inc;
-        slot->age = 0;
-        slot->len = len;
-        slot->gl = std::cos (pan * juce::MathConstants<float>::halfPi) * 1.4142f;
-        slot->gr = std::sin (pan * juce::MathConstants<float>::halfPi) * 1.4142f;
+        const float halfPi = juce::MathConstants<float>::halfPi;
+
+        // One grain plays the chosen stretch of the sample forwards, the other plays the very same stretch backwards.
+        // The reverse knob balances them (equal power): 0 = only the forward grain (the dry sound), 1 = only the reversed one.
+        auto launch = [&] (bool backwards, float gain)
+        {
+            Grain* slot = nullptr;
+            for (auto& g : grains) if (! g.active) { slot = &g; break; }
+            if (slot == nullptr) return;
+
+            slot->active = true;
+            slot->s = &s;
+            slot->pos = backwards ? start + (double) (len - 1) * inc : start;
+            slot->inc = backwards ? -inc : inc;
+            slot->age = 0;
+            slot->len = len;
+            slot->gl = std::cos (pan * halfPi) * 1.4142f * gain;
+            slot->gr = std::sin (pan * halfPi) * 1.4142f * gain;
+        };
+
+        const float rv = juce::jlimit (0.f, 1.f, reverse);
+        if (rv < 0.999f) launch (false, std::cos (rv * halfPi));
+        if (rv > 0.001f) launch (true,  std::sin (rv * halfPi));
         if (idx == cur) uiGrain.store ((float) (start / srcLen));
     };
 
@@ -589,14 +542,6 @@ void ScattrProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::Midi
             playhead = 0.0;
             noteDone = false;
             grainCountdown = 0.0;
-        }
-
-        // a new key also brings in a different wind texture (it fades across, no click)
-        if (textures.size() > 1 && texIdx >= 0)
-        {
-            int t = texIdx;
-            for (int k = 0; k < 6 && t == texIdx; ++k) t = rng.nextInt ((int) textures.size());
-            if (t != texIdx) texNext = t;
         }
     }
 
@@ -661,7 +606,7 @@ void ScattrProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::Midi
         {
             if (! g.active) continue;
             const int i = (int) g.pos;
-            if (i + 1 >= g.s->length) { g.active = false; continue; }
+            if (g.pos < 0.0 || i + 1 >= g.s->length) { g.active = false; continue; }
 
             const float fr = (float) (g.pos - i);
             const float* d0 = g.s->data.getReadPointer (0);
@@ -678,47 +623,6 @@ void ScattrProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::Midi
         }
 
         float yL = oL * norm, yR = oR * norm;
-
-        // wind: a looping texture layer whose level is the wind knob
-        {
-            const bool wantTex = active && wind > 0.001f && ! textures.empty();
-            if (wantTex && texIdx < 0)
-            {
-                texIdx = rng.nextInt ((int) textures.size());
-                const auto& t0 = textures[(size_t) texIdx];
-                texPos = rng.nextDouble() * (double) (t0.length - t0.xfade);
-            }
-            if (texNext >= 0 && texLevel < 0.003f)
-            {
-                texIdx = texNext;
-                texNext = -1;
-                const auto& t0 = textures[(size_t) texIdx];
-                texPos = rng.nextDouble() * (double) (t0.length - t0.xfade);
-            }
-            texLevel += (((wantTex && texNext < 0) ? 1.f : 0.f) - texLevel) * texCoef;
-
-            if (texLevel > 0.0005f && texIdx >= 0)
-            {
-                const auto& tx = textures[(size_t) texIdx];
-                const double loopLen = (double) (tx.length - tx.xfade);
-                float tl, tr;
-                readTexAt (tx, texPos, tl, tr);
-                if (texPos < (double) tx.xfade)   // blend the loop seam
-                {
-                    float l2, r2;
-                    readTexAt (tx, texPos + loopLen, l2, r2);
-                    const float th = (float) (texPos / (double) tx.xfade) * juce::MathConstants<float>::halfPi;
-                    tl = tl * std::sin (th) + l2 * std::cos (th);
-                    tr = tr * std::sin (th) + r2 * std::cos (th);
-                }
-                texPos += tx.sampleRate / sr;
-                if (texPos >= loopLen) texPos -= loopLen;
-
-                const float tg = wind * texLevel;
-                yL += tl * tg;
-                yR += tr * tg;
-            }
-        }
 
         if (R == nullptr) yL = yR = 0.5f * (yL + yR);
 
@@ -889,6 +793,16 @@ void ScattrProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::Midi
             triggerAsyncUpdate();
         }
     }
+
+    // master level: the very last stage, smoothed so turning the knob never crackles
+    masterSm.setTargetValue (prm ("master"));
+    if (masterSm.isSmoothing() || std::abs (masterSm.getTargetValue() - 1.f) > 1.0e-4f)
+        for (int n = 0; n < numSamples; ++n)
+        {
+            const float g = masterSm.getNextValue();
+            L[n] *= g;
+            if (R != nullptr) R[n] *= g;
+        }
 
     // feed the header equalizer with the finished (post-effects) mono signal
     {

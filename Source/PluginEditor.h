@@ -197,6 +197,8 @@ private:
     bool animOn() const { return ! proc.setNoAnim.load(); }   // false when the user has switched animations off
     void showSampleMenu (int idx);   // right-click menu on a sample: mute / remove
     void setTab (int t);
+    void restoreFocus();        // take the keyboard back after a native dialog / drop (see the .cpp)
+    void restoreFocusSoon();
 
     // static layer: sky, atmosphere and card shells. Drawn once per theme / tab into `cache`, then blitted every frame.
     void rebuildCache();
@@ -236,10 +238,10 @@ private:
 
     // Settings tab: one glass card holding four rows (a title and a note on the left, the control on the right)
     juce::Rectangle<float> settingsPanel() const { return { 18.f, 76.f, 744.f, 438.f }; }
-    juce::Rectangle<float> settingsRow (int i) const
+    juce::Rectangle<float> settingsRow (int i) const   // five rows: master, tips, animations, themes, startup size
     {
         const auto sp = settingsPanel();
-        return { sp.getX() + 16.f, sp.getY() + 44.f + 92.f * (float) i, sp.getWidth() - 32.f, 84.f };
+        return { sp.getX() + 16.f, sp.getY() + 34.f + 80.f * (float) i, sp.getWidth() - 32.f, 76.f };
     }
     juce::Rectangle<float> fxPanel (int k) const   // 0 phaser, 1 chorus, 2 delay, 3 reverb
     {
@@ -329,6 +331,7 @@ private:
     int playIdx = -1;       // sample the engine is playing right now
     int dragHandle = 0;     // 0 none, 1 start bar, 2 end bar
     bool playing = false, shownPlaying = false;
+    float playGlow = 0.f;   // 0..1: the soft light under the waveform while a sample sounds
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (ScattrPanel)
 };
