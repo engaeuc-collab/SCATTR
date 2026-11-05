@@ -42,6 +42,14 @@ namespace Scat
                  m (a.grass, b.grass), m (a.grassDark, b.grassDark), m (a.glow, b.glow) };
     }
 
+    // The same palette with the colour taken out: every role keeps its brightness, so the layout still reads
+    inline Palette grayPal (const Palette& p)
+    {
+        auto g = [] (juce::Colour c) { return juce::Colour::greyLevel (c.getPerceivedBrightness()).withAlpha (c.getAlpha()); };
+        return { g (p.bgTop), g (p.bgMid), g (p.bgBot), g (p.soil), g (p.moss), g (p.ink), g (p.dim), g (p.line),
+                 g (p.bark), g (p.acc), g (p.accDark), g (p.amber), g (p.grass), g (p.grassDark), g (p.glow) };
+    }
+
     struct Theme { const char* name; Palette pal; };
 
     // sky top/mid/bottom, panel, hover, text, dim text, track, border, accent, accent dark, highlight, leaf, leaf dark, light
@@ -185,7 +193,8 @@ private:
 
     void timerCallback() override;
     void openSpectral();             // snapshot + blur everything, then raise the spectral gate window
-    void applyTheme (int idx, bool animate = true);
+    void applyTheme (int idx, bool animate = true, bool force = false);
+    bool animOn() const { return ! proc.setNoAnim.load(); }   // false when the user has switched animations off
     void showSampleMenu (int idx);   // right-click menu on a sample: mute / remove
     void setTab (int t);
 
@@ -224,6 +233,14 @@ private:
     // so every knob sits on the same spacing and nothing is left empty.
     //   row 1: phaser (5 knobs) | chorus (3)        row 2: delay (3) | reverb (3)
     juce::Rectangle<float> eqPanel() const { return { 18.f, 76.f, 744.f, 172.f }; }
+
+    // Settings tab: one glass card holding four rows (a title and a note on the left, the control on the right)
+    juce::Rectangle<float> settingsPanel() const { return { 18.f, 76.f, 744.f, 438.f }; }
+    juce::Rectangle<float> settingsRow (int i) const
+    {
+        const auto sp = settingsPanel();
+        return { sp.getX() + 16.f, sp.getY() + 44.f + 92.f * (float) i, sp.getWidth() - 32.f, 84.f };
+    }
     juce::Rectangle<float> fxPanel (int k) const   // 0 phaser, 1 chorus, 2 delay, 3 reverb
     {
         constexpr float W = 744.f, pad = 24.f, gap = 8.f;
@@ -266,13 +283,15 @@ private:
     static constexpr float themeFadeSec = 0.7f;
     int curTheme = 0, tab = 0;
     std::array<Knob, 30> knobs;
-    std::array<juce::TextButton, 2> tabBtn;
+    std::array<juce::TextButton, 3> tabBtn;   // grains, fx, settings
     juce::TextButton loadBtn { "PLANT" }, clearBtn { "CLEAR" };
     juce::TextButton spaceBtn { "HALL" };
     juce::ToggleButton donBtn { "ON" }, ronBtn { "ON" }, ponBtn { "ON" }, conBtn { "ON" };   // per-effect bypass
     std::unique_ptr<juce::AudioProcessorValueTreeState::ButtonAttachment> donAttach, ronAttach, ponAttach, conAttach;
     std::unique_ptr<EqDisplay> eqView;               // the FX tab's equalizer (spectrum, curve and draggable bands)
     juce::TextButton scaleBtn { "100%" };
+    std::array<juce::ToggleButton, 3> setBtn;       // settings: disable tips, disable animations, disable themes
+    juce::TextButton startBtn { "LAST USED" };      // settings: the size the window opens at
     juce::TextButton themeBtn { "summer" };
     juce::ToggleButton droneBtn { "DRIFT" };
     std::unique_ptr<juce::AudioProcessorValueTreeState::ButtonAttachment> droneAttach;
@@ -346,7 +365,8 @@ public:
     bool redo();   // and forward again (Ctrl+Y / Ctrl+Shift+Z)
 
 private:
-    struct BandP { juce::RangedAudioParameter *on = nullptr, *type = nullptr, *freq = nullptr, *gain = nullptr, *q = nullptr, *slope = nullptr; };
+    struct BandP { juce::RangedAudioParameter *on = nullptr, *type = nullptr, *freq = nullptr, *gain = nullptr, *q = nullptr, *slope = nullptr,
+                   *dyn = nullptr, *thresh = nullptr, *range = nullptr, *speed = nullptr; };
 
     juce::Rectangle<float> plot() const { return getLocalBounds().toFloat().withTrimmedLeft (12.f).withTrimmedRight (36.f).withTrimmedTop (28.f).withTrimmedBottom (22.f); }
     float xOfHz (float hz) const;
@@ -358,7 +378,11 @@ private:
     int  hitBand (juce::Point<float> p) const;
     void setNorm (juce::RangedAudioParameter* p, float plainValue);
     void beginGesture (int band);
+    void beginDrag (juce::RangedAudioParameter* a, juce::RangedAudioParameter* b = nullptr);
     void endGesture();
+    int  hitDynHandle (juce::Point<float> p, int band) const;   // 1 = the range handle, 2 = the threshold handle, 0 = neither
+    float yOfThreshold (const EqCore::Band& b) const;
+    static float analyzerTilt (float hz) { return 4.5f * std::log2 (hz / 1000.f); }   // the analyzer's own tilt, so the threshold lines up with the spectrum
     void addBandAt (juce::Point<float> p);
     void removeBand (int i);
     void showTypeMenu (int i);
@@ -399,6 +423,8 @@ private:
 
     int hover = -1, selected = -1;
     bool dragging = false;
+    int dragKind = 0;   // what is being dragged: 0 a band's node, 1 its dynamic range handle, 2 its threshold handle
+    juce::RangedAudioParameter *dragA = nullptr, *dragB = nullptr;
     juce::Point<float> hoverPt;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (EqDisplay)

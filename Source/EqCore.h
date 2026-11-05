@@ -43,6 +43,20 @@ namespace EqCore
         return n[std::min (numSlopes - 1, std::max (0, s))];
     }
 
+    // dynamic bands: how fast the band's level detector reacts
+    constexpr int numSpeeds = 3;
+    inline const char* speedName (int s)
+    {
+        static const char* n[numSpeeds] = { "Fast", "Medium", "Slow" };
+        return n[std::min (numSpeeds - 1, std::max (0, s))];
+    }
+    inline void speedTimes (int s, double& attackMs, double& releaseMs)
+    {
+        static const double a[numSpeeds] = { 2.0, 10.0, 40.0 }, r[numSpeeds] = { 50.0, 150.0, 500.0 };
+        s = std::min (numSpeeds - 1, std::max (0, s));
+        attackMs = a[s];  releaseMs = r[s];
+    }
+
     struct Band
     {
         bool  on = false;
@@ -50,9 +64,17 @@ namespace EqCore
         float freq = 1000.f, gainDb = 0.f, q = 1.f;
         int   slope = 0;   // only used by the cuts
 
+        // Dynamic: the band listens to the signal around its own frequency. Once that passes `thresh` (dB), the band's gain
+        // moves from `gainDb` towards `gainDb + range`. (A bell at 0 dB with range -8 is a de-esser; a bell at -6 dB with
+        // range +6 opens up as the music gets louder.) Only bands that have a gain can be dynamic.
+        bool  dyn = false;
+        float thresh = -30.f, range = -6.f;
+        int   speed = 1;
+
         bool operator== (const Band& o) const
         {
-            return on == o.on && type == o.type && freq == o.freq && gainDb == o.gainDb && q == o.q && slope == o.slope;
+            return on == o.on && type == o.type && freq == o.freq && gainDb == o.gainDb && q == o.q && slope == o.slope
+                && dyn == o.dyn && thresh == o.thresh && range == o.range && speed == o.speed;
         }
     };
 
@@ -155,6 +177,18 @@ namespace EqCore
         return s;
     }
 
+    // the filter a dynamic band listens through: its own region of the spectrum
+    inline Coeffs designDetector (const Band& b, double sr)
+    {
+        switch (b.type)
+        {
+            case LowShelf:  return design (HighCut,  b.freq, 0.0, 0.70710678, sr);   // a low shelf listens to what is below it
+            case HighShelf: return design (LowCut,   b.freq, 0.0, 0.70710678, sr);
+            case TiltShelf: return design (BandPass, b.freq, 0.0, 0.5, sr);
+            default:        return design (BandPass, b.freq, 0.0, std::max (0.4, (double) b.q), sr);
+        }
+    }
+
     // magnitude of one biquad at a frequency, in dB
     inline double magDb (const Coeffs& c, double hz, double sr)
     {
@@ -197,12 +231,26 @@ namespace EqCore
                 auto& s = slots[(size_t) i];
                 if (! s.coeffsValid || ! (s.band == b[i]))
                 {
-                    if (b[i].on && ! s.band.on) s.reset();   // a band waking up starts from silence
+                    const bool wasOn = s.band.on;
+                    if (b[i].on && ! wasOn) s.reset();       // a band waking up starts from silence
                     s.band = b[i];
                     const int oldN = s.sec.n;
                     s.sec = designBand (s.band, sr);
                     if (s.sec.n != oldN) s.reset();          // a different slope: the old section states mean nothing
                     s.coeffsValid = true;
+                    s.lastG = s.band.gainDb;
+
+                    const bool dynNow = s.band.on && s.band.dyn && usesGain (s.band.type);
+                    if (dynNow != s.dynActive || (s.band.on && ! wasOn)) { s.env = 0.0; s.dz[0] = s.dz[1] = 0.0; s.amt = 0.f; }
+                    s.dynActive = dynNow;
+                    if (dynNow)
+                    {
+                        s.det = designDetector (s.band, sr);
+                        double a, r;  speedTimes (s.band.speed, a, r);
+                        s.atkC = 1.0 - std::exp (-1.0 / (0.001 * a * sr));
+                        s.relC = 1.0 - std::exp (-1.0 / (0.001 * r * sr));
+                    }
+                    else s.amt = 0.f;
                 }
                 if (s.band.on) anyOn = true;
             }
@@ -210,30 +258,43 @@ namespace EqCore
 
         bool active() const { return anyOn; }
 
+        // 0..1: how far a dynamic band has moved towards its range right now (the UI draws the curve with it)
+        float dynAmount (int i) const { return slots[(size_t) i].dynActive ? slots[(size_t) i].amt : 0.f; }
+
         void process (float* L, float* R, int n)
         {
             if (! anyOn) return;
             const int numCh = R != nullptr ? 2 : 1;
-            for (auto& s : slots)
+
+            // Work in short chunks: at the start of each one the dynamic bands listen to the (still untouched) input and
+            // nudge their coefficients, then every band filters the chunk.
+            constexpr int chunk = 32;
+            for (int start = 0; start < n; start += chunk)
             {
-                if (! s.band.on) continue;
-                const int ns = s.sec.n;
-                for (int ch = 0; ch < numCh; ++ch)
+                const int len = std::min (chunk, n - start);
+                updateDynamics (L + start, R != nullptr ? R + start : nullptr, len);
+
+                for (auto& s : slots)
                 {
-                    float* x = ch == 0 ? L : R;
-                    auto& z = s.z[ch];
-                    for (int i = 0; i < n; ++i)
+                    if (! s.band.on) continue;
+                    const int ns = s.sec.n;
+                    for (int ch = 0; ch < numCh; ++ch)
                     {
-                        double v = x[i];
-                        for (int k = 0; k < ns; ++k)   // through every section in double precision
+                        float* x = (ch == 0 ? L : R) + start;
+                        auto& z = s.z[ch];
+                        for (int i = 0; i < len; ++i)
                         {
-                            const auto& c = s.sec.c[k];
-                            const double out = c.b0 * v + z[k][0];
-                            z[k][0] = c.b1 * v - c.a1 * out + z[k][1];
-                            z[k][1] = c.b2 * v - c.a2 * out;
-                            v = out;
+                            double v = x[i];
+                            for (int k = 0; k < ns; ++k)   // through every section in double precision
+                            {
+                                const auto& c = s.sec.c[k];
+                                const double out = c.b0 * v + z[k][0];
+                                z[k][0] = c.b1 * v - c.a1 * out + z[k][1];
+                                z[k][1] = c.b2 * v - c.a2 * out;
+                                v = out;
+                            }
+                            x[i] = (float) v;
                         }
-                        x[i] = (float) v;
                     }
                 }
             }
@@ -246,8 +307,54 @@ namespace EqCore
             Sections sec;
             double z[2][maxSections][2] {};
             bool coeffsValid = false;
+
+            // dynamic bands
+            bool dynActive = false;
+            Coeffs det;                  // the detector filter
+            double dz[2] {};             // its state
+            double env = 0.0;            // the level follower
+            double atkC = 0.01, relC = 0.001;
+            float amt = 0.f, lastG = 0.f;
+
             void reset() { for (auto& ch : z) for (auto& sec : ch) sec[0] = sec[1] = 0.0; }
         };
+
+        void updateDynamics (const float* l, const float* r, int len)
+        {
+            for (auto& s : slots)
+            {
+                if (! s.dynActive) { s.amt = 0.f; continue; }
+
+                double z1 = s.dz[0], z2 = s.dz[1], env = s.env;
+                const auto& c = s.det;
+                for (int i = 0; i < len; ++i)
+                {
+                    const double in = r != nullptr ? 0.5 * ((double) l[i] + (double) r[i]) : (double) l[i];
+                    const double out = c.b0 * in + z1;
+                    z1 = c.b1 * in - c.a1 * out + z2;
+                    z2 = c.b2 * in - c.a2 * out;
+                    const double a = std::fabs (out);
+                    env += (a > env ? s.atkC : s.relC) * (a - env);
+                }
+                s.dz[0] = z1;  s.dz[1] = z2;
+                s.env = env < 1.0e-12 ? 0.0 : env;
+
+                // above the threshold the band moves towards its range, over a soft 8 dB knee
+                const double levelDb = 20.0 * std::log10 (s.env + 1.0e-9);
+                const double x = std::min (1.0, std::max (0.0, (levelDb - ((double) s.band.thresh - 4.0)) / 8.0));
+                const float target = (float) (x * x * (3.0 - 2.0 * x));
+                s.amt += (target - s.amt) * 0.4f;
+
+                const float g = s.band.gainDb + s.band.range * s.amt;
+                if (std::fabs (g - s.lastG) > 0.02f)
+                {
+                    Band eb = s.band;
+                    eb.gainDb = g;
+                    s.sec = designBand (eb, sr);
+                    s.lastG = g;
+                }
+            }
+        }
 
         double sr = 44100.0;
         bool anyOn = false;

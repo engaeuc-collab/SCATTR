@@ -72,7 +72,8 @@ juce::AudioProcessorValueTreeState::ParameterLayout makeLayout()
 
     // equalizer: 24 bands, all off until the user adds them
     {
-        juce::StringArray typeNames, slopeNames;
+        juce::StringArray typeNames, slopeNames, speedNames;
+        for (int t = 0; t < EqCore::numSpeeds; ++t) speedNames.add (EqCore::speedName (t));
         for (int t = 0; t < EqCore::numTypes; ++t) typeNames.add (EqCore::typeName (t));
         for (int t = 0; t < EqCore::numSlopes; ++t) slopeNames.add (EqCore::slopeName (t));
 
@@ -91,6 +92,14 @@ juce::AudioProcessorValueTreeState::ParameterLayout makeLayout()
             qr.setSkewForCentre (1.f);
             p.push_back (std::make_unique<juce::AudioParameterFloat> (juce::ParameterID { id + "q", 1 }, "EQ " + n + " Q", qr, 1.f));
             p.push_back (std::make_unique<juce::AudioParameterChoice> (juce::ParameterID { id + "sl", 1 }, "EQ " + n + " Slope", slopeNames, 0));
+
+            // dynamic mode: on, threshold (dB), range (dB, how far the gain moves above the threshold), detector speed
+            p.push_back (std::make_unique<juce::AudioParameterBool> (juce::ParameterID { id + "dy", 1 }, "EQ " + n + " Dynamic", false));
+            p.push_back (std::make_unique<juce::AudioParameterFloat> (juce::ParameterID { id + "dt", 1 }, "EQ " + n + " Dyn Threshold",
+                                                                      NR (-80.f, 0.f, 0.1f), -30.f));
+            p.push_back (std::make_unique<juce::AudioParameterFloat> (juce::ParameterID { id + "dr", 1 }, "EQ " + n + " Dyn Range",
+                                                                      NR (-EqCore::maxGainDb, EqCore::maxGainDb, 0.1f), -6.f));
+            p.push_back (std::make_unique<juce::AudioParameterChoice> (juce::ParameterID { id + "ds", 1 }, "EQ " + n + " Dyn Speed", speedNames, 1));
         }
     }
 
@@ -219,10 +228,12 @@ ScattrProcessor::ScattrProcessor()
     for (auto& s : scopeBuf) s.store (0.f, std::memory_order_relaxed);
     for (auto& s : eqPreBuf)  s.store (0.f, std::memory_order_relaxed);
     for (auto& s : eqPostBuf) s.store (0.f, std::memory_order_relaxed);
+    for (auto& s : eqDynAmt)  s.store (0.f, std::memory_order_relaxed);
+    loadUiSettings();
     for (int i = 0; i < EqCore::numBands; ++i)
     {
-        static const char* suffix[6] = { "on", "ty", "f", "g", "q", "sl" };
-        for (int k = 0; k < 6; ++k)
+        static const char* suffix[10] = { "on", "ty", "f", "g", "q", "sl", "dy", "dt", "dr", "ds" };
+        for (int k = 0; k < 10; ++k)
             eqParam[i][k] = apvts.getRawParameterValue ("eq" + juce::String (i) + suffix[k]);
     }
     for (int i = 0; i <= 1024; ++i)
@@ -838,12 +849,17 @@ void ScattrProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::Midi
             b.gainDb = eqParam[i][3]->load();
             b.q      = eqParam[i][4]->load();
             b.slope  = juce::jlimit (0, EqCore::numSlopes - 1, (int) eqParam[i][5]->load());
+            b.dyn    = eqParam[i][6]->load() > 0.5f;
+            b.thresh = eqParam[i][7]->load();
+            b.range  = eqParam[i][8]->load();
+            b.speed  = juce::jlimit (0, EqCore::numSpeeds - 1, (int) eqParam[i][9]->load());
         }
         eq.setBands (bands);
 
         const int w0 = eqTapW.load (std::memory_order_relaxed);
         tap (eqPreBuf, w0);
         eq.process (L, R, numSamples);
+        for (int i = 0; i < EqCore::numBands; ++i) eqDynAmt[i].store (eq.dynAmount (i), std::memory_order_relaxed);   // for the display
         tap (eqPostBuf, w0);
         eqTapW.store ((w0 + numSamples) & (eqTapSize - 1), std::memory_order_release);
     }
@@ -953,6 +969,47 @@ void ScattrProcessor::setStateInformation (const void* data, int size)
     }
 }
 
-juce::AudioProcessorEditor* ScattrProcessor::createEditor() { return new ScattrEditor (*this); }
+// ---- user preferences: kept in a small file in the user's app-data folder, so they follow the user to every instance and project
+
+namespace
+{
+juce::PropertiesFile::Options uiSettingsOptions()
+{
+    juce::PropertiesFile::Options o;
+    o.applicationName = "Nature";
+    o.filenameSuffix = ".settings";
+    o.folderName = "Nature";
+    o.osxLibrarySubFolder = "Application Support";
+    o.storageFormat = juce::PropertiesFile::storeAsXML;
+    return o;
+}
+}
+
+void ScattrProcessor::loadUiSettings()
+{
+    juce::PropertiesFile pf (uiSettingsOptions());
+    setNoTips = pf.getBoolValue ("noTips", false);
+    setNoAnim = pf.getBoolValue ("noAnim", false);
+    setMono   = pf.getBoolValue ("mono", false);
+    setStartSize = juce::jlimit (0, 5, pf.getIntValue ("startSize", 0));
+}
+
+void ScattrProcessor::saveUiSettings()
+{
+    juce::PropertiesFile pf (uiSettingsOptions());
+    pf.setValue ("noTips", setNoTips.load());
+    pf.setValue ("noAnim", setNoAnim.load());
+    pf.setValue ("mono", setMono.load());
+    pf.setValue ("startSize", setStartSize.load());
+    pf.saveIfNeeded();
+}
+
+juce::AudioProcessorEditor* ScattrProcessor::createEditor()
+{
+    static const float startScales[5] = { 0.5f, 0.75f, 1.0f, 1.5f, 2.0f };
+    const int ss = setStartSize.load();
+    if (ss > 0) editorScale = startScales[ss - 1];   // "open at" overrides the zoom saved in the project
+    return new ScattrEditor (*this);
+}
 
 juce::AudioProcessor* JUCE_CALLTYPE createPluginFilter() { return new ScattrProcessor(); }

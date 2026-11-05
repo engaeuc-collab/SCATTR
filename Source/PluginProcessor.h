@@ -99,8 +99,15 @@ public:
     static constexpr int eqTapSize = 8192;   // power of two
     std::atomic<float> eqPreBuf[eqTapSize], eqPostBuf[eqTapSize];
     std::atomic<int>   eqTapW { 0 };         // next write index, always kept in 0..eqTapSize-1
+    std::atomic<float> eqDynAmt[EqCore::numBands];   // how far each dynamic band is currently moved (0..1), for the display
+
+    // Preferences that belong to the user rather than the project (saved in a small file in the app-data folder)
+    std::atomic<bool> setNoTips { false }, setNoAnim { false }, setMono { false };
+    std::atomic<int>  setStartSize { 0 };    // 0 = open at the last-used size, 1..5 = 50, 75, 100, 150, 200 %
+    void saveUiSettings();
 
 private:
+    void loadUiSettings();
     void handleAsyncUpdate() override { setLatencySamples (pendingLatency.load()); }   // the host hears about latency on the message thread
     std::atomic<int> pendingLatency { 0 };
     int reportedLatency = 0;
@@ -150,7 +157,7 @@ private:
     bool phaserActive = false, chorusActive = false;
 
     EqCore::Processor eq;
-    std::atomic<float>* eqParam[EqCore::numBands][6] {};   // on, type, freq, gain, q, slope (cached so the audio thread never looks them up by name)
+    std::atomic<float>* eqParam[EqCore::numBands][10] {};   // on, type, freq, gain, q, slope, dyn on, dyn threshold, dyn range, dyn speed (cached so the audio thread never looks them up by name)
 
     juce::SmoothedValue<float, juce::ValueSmoothingTypes::Linear> dOnSm, rOnSm;   // bypass fades
     std::vector<float> revL, revR, preBuf[2];                                           // reverb scratch + pre-delay

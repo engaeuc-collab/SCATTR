@@ -211,7 +211,7 @@ const Tip kTips[42] = {
     { "spectral gate", "Opens the spectral gate, which keeps or removes each frequency depending on whether it is above or below a cutoff. Lit while on. Right-click to switch it on or off." },
     { "phaser",        "Turns the phaser on or off." },
     { "chorus",        "Turns the chorus on or off." },
-    { "equalizer",     "Double-click to add a band (up to 24), drag a dot to move it, scroll over it to change its width, right-click it for its shape and slope. Ctrl+Z undoes." },
+    { "equalizer",     "Double-click to add a band (up to 24), drag a dot to move it, scroll over it to change its width, right-click it for its shape, slope and dynamic mode. Ctrl+Z undoes." },
     { "pre",           "Also shows the sound going into the equalizer, as a thin line behind the filled spectrum." }
 };
 
@@ -801,8 +801,8 @@ ScattrPanel::ScattrPanel (ScattrProcessor& p) : proc (p)
     }
 
     // tabs
-    static const char* tabNames[2] = { "GRAINS", "FX" };
-    for (int i = 0; i < 2; ++i)
+    static const char* tabNames[3] = { "GRAINS", "FX", "SETTINGS" };
+    for (int i = 0; i < 3; ++i)
     {
         auto& b = tabBtn[(size_t) i];
         b.setButtonText (tabNames[i]);
@@ -812,6 +812,50 @@ ScattrPanel::ScattrPanel (ScattrProcessor& p) : proc (p)
         addAndMakeVisible (b);
     }
     tabBtn[0].setToggleState (true, juce::dontSendNotification);
+
+    // settings tab
+    {
+        const std::atomic<bool>* flags[3] = { &proc.setNoTips, &proc.setNoAnim, &proc.setMono };
+        for (int i = 0; i < 3; ++i)
+        {
+            auto& b = setBtn[(size_t) i];
+            b.setButtonText ("ON");
+            b.setToggleState (flags[i]->load(), juce::dontSendNotification);
+            b.setMouseCursor (juce::MouseCursor::PointingHandCursor);
+            b.onClick = [this, i]
+            {
+                const bool on = setBtn[(size_t) i].getToggleState();
+                if (i == 0) proc.setNoTips = on;
+                if (i == 1) proc.setNoAnim = on;
+                if (i == 2) proc.setMono = on;
+                proc.saveUiSettings();
+                if (i == 2) applyTheme (curTheme, true, true);   // recolour (or restore) right away
+                repaint();
+            };
+            addChildComponent (b);
+        }
+
+        static const char* startNames[6] = { "LAST USED", "50%", "75%", "100%", "150%", "200%" };
+        startBtn.setButtonText (startNames[juce::jlimit (0, 5, proc.setStartSize.load())]);
+        startBtn.setMouseCursor (juce::MouseCursor::PointingHandCursor);
+        startBtn.onClick = [this]
+        {
+            juce::PopupMenu menu;
+            const int cur = proc.setStartSize.load();
+            for (int i = 0; i < 6; ++i) menu.addItem (i + 1, i == 0 ? juce::String ("Last used") : juce::String (startNames[i]), true, i == cur);
+
+            juce::Component::SafePointer<ScattrPanel> safe (this);
+            menu.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (&startBtn),
+                                [safe] (int result)
+                                {
+                                    if (safe == nullptr || result <= 0) return;
+                                    safe->proc.setStartSize = result - 1;
+                                    safe->proc.saveUiSettings();
+                                    safe->startBtn.setButtonText (startNames[result - 1]);
+                                });
+        };
+        addChildComponent (startBtn);
+    }
 
     addAndMakeVisible (spaceBtn);
     spaceBtn.onClick = [this]
@@ -923,10 +967,11 @@ ScattrPanel::~ScattrPanel()
     setLookAndFeel (nullptr);
 }
 
-void ScattrPanel::applyTheme (int idx, bool animate)
+void ScattrPanel::applyTheme (int idx, bool animate, bool force)
 {
     idx = juce::jlimit (0, (int) Scat::themes().size() - 1, idx);
-    if (animate && idx == curTheme && themeT >= 1.f) return;
+    animate = animate && animOn();
+    if (animate && idx == curTheme && themeT >= 1.f && ! force) return;
 
     // What is on screen right now becomes the "from" side. If we're interrupting an unfinished
     // transition, bake the current blend into one image so the fade carries on from what the user sees.
@@ -951,13 +996,16 @@ void ScattrPanel::applyTheme (int idx, bool animate)
     curTheme = idx;
     lnf.setStyle (idx);
     proc.themeIdx = idx;
-    targetPal = Scat::themes()[(size_t) idx].pal;
+    const bool mono = proc.setMono.load();
+    targetPal = mono ? Scat::grayPal (Scat::themes()[(size_t) idx].pal) : Scat::themes()[(size_t) idx].pal;
     themeT = animate ? 0.f : 1.f;
     if (! animate) pal = targetPal;
 
     cacheTheme = -1;   // the cached sky and cards are rebuilt with the new palette (see rebuildCache)
     lnf.setPalette (pal);
-    themeBtn.setButtonText (Scat::themes()[(size_t) idx].name);
+    themeBtn.setButtonText (mono ? "mono" : Scat::themes()[(size_t) idx].name);
+    themeBtn.setEnabled (! mono);          // themes are switched off while black and white is on
+    themeBtn.setAlpha (mono ? 0.5f : 1.f);
     sendLookAndFeelChange();   // refreshes the knob readouts' colours
     repaint();
 }
@@ -965,21 +1013,23 @@ void ScattrPanel::applyTheme (int idx, bool animate)
 void ScattrPanel::setTab (int t)
 {
     tab = t;
-    const bool g = (t == 0);
+    const bool grains = (t == 0), fx = (t == 1), sett = (t == 2);
     for (size_t i = 0; i < knobs.size(); ++i)
     {
-        const bool vis = (onGrainsTab (i) == g) && i != 18 && ! retiredKnob (i);   // 18 = "cycle": retired, samples now play all the way through
+        const bool vis = ((grains && onGrainsTab (i)) || (fx && ! onGrainsTab (i))) && i != 18 && ! retiredKnob (i);   // 18 = "cycle": retired, samples now play all the way through
         knobs[i].slider.setVisible (vis);
         knobs[i].label.setVisible (vis);
     }
-    spaceBtn.setVisible (! g);
-    for (auto* b : { &donBtn, &ronBtn, &ponBtn, &conBtn }) b->setVisible (! g);
-    if (eqView != nullptr) eqView->setVisible (! g);
-    loadBtn.setVisible (g);
-    clearBtn.setVisible (g);
-    droneBtn.setVisible (g);
-    tuneBtn.setVisible (g);
-    specBtn.setVisible (g);
+    spaceBtn.setVisible (fx);
+    for (auto* b : { &donBtn, &ronBtn, &ponBtn, &conBtn }) b->setVisible (fx);
+    if (eqView != nullptr) eqView->setVisible (fx);
+    loadBtn.setVisible (grains);
+    clearBtn.setVisible (grains);
+    droneBtn.setVisible (grains);
+    tuneBtn.setVisible (grains);
+    specBtn.setVisible (grains);
+    for (auto& b : setBtn) b.setVisible (sett);
+    startBtn.setVisible (sett);
     tabBtn[(size_t) t].setToggleState (true, juce::dontSendNotification);
     repaint();
 }
@@ -987,8 +1037,9 @@ void ScattrPanel::setTab (int t)
 void ScattrPanel::resized()
 {
     // header
-    tabBtn[0].setBounds (18, 22, 88, 34);
-    tabBtn[1].setBounds (112, 22, 88, 34);
+    tabBtn[0].setBounds (18, 22, 80, 34);
+    tabBtn[1].setBounds (102, 22, 58, 34);
+    tabBtn[2].setBounds (164, 22, 92, 34);
     themeBtn.setBounds (600, 26, 76, 26);
     scaleBtn.setBounds (682, 26, 80, 26);
 
@@ -1027,19 +1078,35 @@ void ScattrPanel::resized()
     {
         if (eqView != nullptr) eqView->setBounds (eqPanel().toNearestInt());
 
-        constexpr int knobH = 80;
-        for (int k = 0; k < 5; ++k) place ((size_t) (22 + k), fxPanel (0), 5, k, knobH);   // phaser: rate, depth, center, feedback, mix
-        for (int k = 0; k < 3; ++k) place ((size_t) (27 + k), fxPanel (1), 3, k, knobH);   // chorus: rate, depth, mix
-        for (int k = 0; k < 3; ++k) place ((size_t) (11 + k), fxPanel (2), 3, k, knobH);   // delay: time, feedback, echo mix
-        for (int k = 0; k < 3; ++k) place ((size_t) (14 + k), fxPanel (3), 3, k, knobH);   // reverb: size, damp, reverb mix
+        // Every card has a header row (its title on the left, its keys on the right) and the knobs sit entirely below it,
+        // so a key never lands on a knob's name.
+        auto placeFx = [this] (size_t idx, juce::Rectangle<float> panel, int n, int k)
+        {
+            const int sw = (int) ((panel.getWidth() - 24.f) / (float) n);
+            const int x = (int) panel.getX() + 12 + k * sw, y = (int) panel.getY();
+            knobs[idx].label.setBounds (x, y + 30, sw, 16);
+            knobs[idx].slider.setBounds (x, y + 45, sw, 76);
+        };
+        for (int k = 0; k < 5; ++k) placeFx ((size_t) (22 + k), fxPanel (0), 5, k);   // phaser: rate, depth, center, feedback, mix
+        for (int k = 0; k < 3; ++k) placeFx ((size_t) (27 + k), fxPanel (1), 3, k);   // chorus: rate, depth, mix
+        for (int k = 0; k < 3; ++k) placeFx ((size_t) (11 + k), fxPanel (2), 3, k);   // delay: time, feedback, echo mix
+        for (int k = 0; k < 3; ++k) placeFx ((size_t) (14 + k), fxPanel (3), 3, k);   // reverb: size, damp, reverb mix
 
-        // each card's on button sits in its top-right corner; the reverb space key sits just left of its own
-        auto onBounds = [&] (int card) { return juce::Rectangle<int> ((int) fxPanel (card).getRight() - 12 - 52, (int) fxPanel (card).getY() + 7, 52, 24); };
+        // each card's on button sits in its top-right corner, in the header row; the reverb space key sits just left of its own
+        auto onBounds = [&] (int card) { return juce::Rectangle<int> ((int) fxPanel (card).getRight() - 12 - 50, (int) fxPanel (card).getY() + 5, 50, 22); };
         ponBtn.setBounds (onBounds (0));
         conBtn.setBounds (onBounds (1));
         donBtn.setBounds (onBounds (2));
         ronBtn.setBounds (onBounds (3));
-        spaceBtn.setBounds (ronBtn.getX() - 6 - 70, ronBtn.getY(), 70, 24);
+        spaceBtn.setBounds (ronBtn.getX() - 6 - 70, ronBtn.getY(), 70, 22);
+    }
+
+    // settings tab: each row's control sits at the right-hand end of the row
+    for (int i = 0; i < 4; ++i)
+    {
+        const auto row = settingsRow (i).toNearestInt();
+        const juce::Rectangle<int> c (row.getRight() - 12 - 132, row.getY() + 25, 132, 34);
+        if (i < 3) setBtn[(size_t) i].setBounds (c); else startBtn.setBounds (c);
     }
 }
 
@@ -1063,7 +1130,7 @@ int ScattrPanel::hitHandle (float x) const
 }
 
 // "Nature" and its sprout sit together in the middle of the header
-float ScattrPanel::titleX() const  { return 0.5f * (200.f + eqRect().getX()) - (titleWidth() + sproutGap + sproutHalf) * 0.5f; }
+float ScattrPanel::titleX() const  { return 0.5f * (262.f + eqRect().getX()) - (titleWidth() + sproutGap + sproutHalf) * 0.5f; }
 float ScattrPanel::sproutX() const { return titleX() + titleWidth() + sproutGap; }
 
 bool ScattrPanel::isInterestedInFileDrag (const juce::StringArray&)
@@ -1233,7 +1300,7 @@ void ScattrPanel::mouseWheelMove (const juce::MouseEvent& e, const juce::MouseWh
 
 void ScattrPanel::timerCallback()
 {
-    anim += 0.033f;
+    if (animOn()) anim += 0.033f;
 
     const double nowMs = juce::Time::getMillisecondCounterHiRes();
     const float dt = juce::jlimit (0.f, 0.1f, (float) ((nowMs - lastTickMs) * 0.001));
@@ -1251,18 +1318,18 @@ void ScattrPanel::timerCallback()
 
     // on/off buttons glide between their two looks in 0.2 s
     specBtn.setToggleState (proc.apvts.getRawParameterValue ("son")->load() > 0.5f, juce::dontSendNotification);
-    for (auto* b : { &droneBtn, &tuneBtn, &donBtn, &ronBtn, &specBtn, &ponBtn, &conBtn })
+    for (auto* b : { &droneBtn, &tuneBtn, &donBtn, &ronBtn, &specBtn, &ponBtn, &conBtn, &setBtn[0], &setBtn[1], &setBtn[2] })
     {
         const float target = b->getToggleState() ? 1.f : 0.f;
         float v = buttonLit (*b);
-        const float step = dt / 0.2f;
+        const float step = animOn() ? dt / 0.2f : 1.f;
         v = v < target ? juce::jmin (target, v + step) : juce::jmax (target, v - step);
         b->getProperties().set ("lit", v);
     }
 
     // hover tips: wait ~0.5 s on a control (0.1 s when moving between controls while a tip is already up)
     {
-        const int hov = juce::ModifierKeys::currentModifiers.isAnyMouseButtonDown() ? -1 : hoveredControl();
+        const int hov = (proc.setNoTips.load() || juce::ModifierKeys::currentModifiers.isAnyMouseButtonDown()) ? -1 : hoveredControl();
         if (hov != hoverId)
         {
             hoverId = hov;
@@ -1281,10 +1348,10 @@ void ScattrPanel::timerCallback()
     if (spaceBtn.getButtonText() != rt[ri]) spaceBtn.setButtonText (rt[ri]);
 
     // bypassed effects look dimmed
-    const float aD = 0.4f + 0.6f * smooth01 (buttonLit (donBtn));
-    const float aR = 0.4f + 0.6f * smooth01 (buttonLit (ronBtn));
-    const float aP = 0.4f + 0.6f * smooth01 (buttonLit (ponBtn));
-    const float aC = 0.4f + 0.6f * smooth01 (buttonLit (conBtn));
+    const float aD = 0.55f + 0.45f * smooth01 (buttonLit (donBtn));
+    const float aR = 0.55f + 0.45f * smooth01 (buttonLit (ronBtn));
+    const float aP = 0.55f + 0.45f * smooth01 (buttonLit (ponBtn));
+    const float aC = 0.55f + 0.45f * smooth01 (buttonLit (conBtn));
     for (size_t idx : { (size_t) 11, (size_t) 12, (size_t) 13 })            { knobs[idx].slider.setAlpha (aD); knobs[idx].label.setAlpha (aD); }
     for (size_t idx : { (size_t) 14, (size_t) 15, (size_t) 16 })            { knobs[idx].slider.setAlpha (aR); knobs[idx].label.setAlpha (aR); }
     for (size_t idx : { (size_t) 22, (size_t) 23, (size_t) 24, (size_t) 25, (size_t) 26 }) { knobs[idx].slider.setAlpha (aP); knobs[idx].label.setAlpha (aP); }
@@ -1989,7 +2056,7 @@ void ScattrPanel::paintWave (juce::Graphics& g)
 {
     // forest floor / waveform
     auto wr = waveRect();
-    paintIdleDrift (g, wr);   // fades out while a sample plays
+    if (animOn()) paintIdleDrift (g, wr);   // fades out while a sample plays
 
     if (proc.samples.empty())
     {
@@ -2156,10 +2223,20 @@ void ScattrPanel::paintStatic (juce::Graphics& g)
         drawGroup (g, grainPanel());
         drawGroup (g, motionPanel());
     }
-    else
+    else if (tab == 1)
     {
         drawGlass (g, eqPanel(), 12.f, 0.62f, true);
         for (int k = 0; k < 4; ++k) drawGroup (g, fxPanel (k));
+    }
+    else
+    {
+        drawGlass (g, settingsPanel(), 12.f, 0.55f);
+        for (int i = 0; i < 3; ++i)   // a hairline between the rows
+        {
+            const auto r = settingsRow (i);
+            g.setColour (pal.line.withAlpha (0.55f));
+            g.drawHorizontalLine ((int) r.getBottom() + 4, r.getX() + 6.f, r.getRight() - 6.f);
+        }
     }
 }
 
@@ -2212,7 +2289,8 @@ void ScattrPanel::paintGlints (juce::Graphics& g)
     int n = 0;
     cards[n++] = eqRect();
     if (tab == 0) { cards[n++] = waveRect(); cards[n++] = sampleRect(); cards[n++] = grainPanel(); cards[n++] = motionPanel(); }
-    else          { cards[n++] = eqPanel(); for (int k = 0; k < 4; ++k) cards[n++] = fxPanel (k); }
+    else if (tab == 1) { cards[n++] = eqPanel(); for (int k = 0; k < 4; ++k) cards[n++] = fxPanel (k); }
+    else               { cards[n++] = settingsPanel(); }
 
     for (int i = 0; i < n; ++i)
     {
@@ -2244,9 +2322,12 @@ void ScattrPanel::paintLabels (juce::Graphics& g)
         static const char* word = "nature";
 
         // where the sun is: one slow pass of 8 s, then 8 s of rest
+        const bool anims = animOn(), mono = proc.setMono.load();
+        auto tone = [mono] (juce::Colour c) { return mono ? juce::Colour::greyLevel (c.getPerceivedBrightness()) : c; };
+
         const float ph = std::fmod (anim / 16.f, 1.f);
         float sunA = 0.f, sunX = 0.f, sunY = 0.f;
-        if (ph < 0.5f)
+        if (anims && ph < 0.5f)
         {
             const float t = ph / 0.5f;
             sunA = smooth01 (juce::jmin (1.f, std::sin (t * pi) * 1.8f));   // fades in and out at the ends
@@ -2256,6 +2337,7 @@ void ScattrPanel::paintLabels (juce::Graphics& g)
 
         auto sunBloom = [&] (float radius, juce::Colour c, float alpha)
         {
+            c = tone (c);
             g.setGradientFill (juce::ColourGradient (c.withAlpha (alpha), sunX, sunY, c.withAlpha (0.f), sunX + radius, sunY, true));
             g.fillEllipse (sunX - radius, sunY - radius, radius * 2.f, radius * 2.f);
         };
@@ -2268,12 +2350,12 @@ void ScattrPanel::paintLabels (juce::Graphics& g)
         }
 
         const auto silver = pal.ink.withSaturation (0.07f);
-        const auto warmTop = juce::Colour (0xfffff0c8), warmBot = juce::Colour (0xffe9953a);
+        const auto warmTop = tone (juce::Colour (0xfffff0c8)), warmBot = tone (juce::Colour (0xffe9953a));
         g.setFont (font);
 
         for (int i = 0; i < 6; ++i)
         {
-            const float bob = 1.9f * std::sin (anim * 1.4f - (float) i * 0.5f);   // the breathing
+            const float bob = anims ? 1.9f * std::sin (anim * 1.4f - (float) i * 0.5f) : 0.f;   // the breathing
             const float cx = x0 + lay.x[i] + lay.w[i] * 0.5f;
             const float dx = cx - sunX;
             const float lit = sunA * std::exp (-(dx * dx) / (2.f * 40.f * 40.f));
@@ -2301,6 +2383,29 @@ void ScattrPanel::paintLabels (juce::Graphics& g)
     {
         drawGroupTitle (g, grainPanel(),  "grove: grains");
         drawGroupTitle (g, motionPanel(), "bloom: motion");
+    }
+    else if (tab == 2)
+    {
+        drawGroupTitle (g, settingsPanel(), "hollow: settings");
+        struct Row { const char* title; const char* note; };
+        static const Row rows[4] = {
+            { "disable tips",       "Hides the little notes that appear when you rest the pointer on a knob or button." },
+            { "disable animations", "Stops the swaying, breathing, glints and drifting lights. The waveform and meters still move." },
+            { "disable themes",     "Turns the whole plugin black and white. The theme button is locked until this is switched off." },
+            { "startup size",       "How big the window is when it opens. Last used keeps whatever zoom you picked most recently." } };
+        for (int i = 0; i < 4; ++i)
+        {
+            const auto r = settingsRow (i);
+            g.setFont (serif (20.f));
+            g.setColour (juce::Colours::black.withAlpha (0.45f));
+            g.drawText (rows[i].title, juce::Rectangle<float> (r.getX() + 15.f, r.getY() + 13.f, 340.f, 26.f), juce::Justification::centredLeft);
+            g.setColour (pal.ink);
+            g.drawText (rows[i].title, juce::Rectangle<float> (r.getX() + 14.f, r.getY() + 12.f, 340.f, 26.f), juce::Justification::centredLeft);
+            g.setFont (serif (13.f, true));
+            g.setColour (pal.dim);
+            g.drawFittedText (rows[i].note, juce::Rectangle<float> (r.getX() + 14.f, r.getY() + 42.f, r.getWidth() - 200.f, 34.f).toNearestInt(),
+                              juce::Justification::topLeft, 2);
+        }
     }
     else
     {
@@ -2456,7 +2561,7 @@ void ScattrPanel::paintKnobGlows (juce::Graphics& g)
 // The wider glow behind an on/off button. It swells as the button switches (see drawKeyBody for the key itself).
 void ScattrPanel::paintToggleGlows (juce::Graphics& g)
 {
-    for (auto* b : { &droneBtn, &tuneBtn, &donBtn, &ronBtn, &specBtn, &ponBtn, &conBtn })
+    for (auto* b : { &droneBtn, &tuneBtn, &donBtn, &ronBtn, &specBtn, &ponBtn, &conBtn, &setBtn[0], &setBtn[1], &setBtn[2] })
     {
         if (! b->isVisible()) continue;
 
@@ -2549,13 +2654,12 @@ void ScattrPanel::paint (juce::Graphics& g)
     g.drawImage (cache, 0, 0, baseW, baseH, 0, 0, cache.getWidth(), cache.getHeight());
     g.setOpacity (1.f);
 
-    paintMotes (g);
-    paintGlints (g);
+    if (animOn()) { paintMotes (g); paintGlints (g); }
     paintLabels (g);
 
     // little sprout beside the title
     {
-        const float sw = 0.08f * std::sin (anim * 0.9f), bx = sproutX();
+        const float sw = animOn() ? 0.08f * std::sin (anim * 0.9f) : 0.f, bx = sproutX();
         drawLeaf (g, bx, 52.f, 0.7f + sw, 20.f, pal.grassDark.brighter (0.2f));
         drawLeaf (g, bx, 52.f, -0.5f + sw, 16.f, pal.grass.darker (0.3f));
         drawLeaf (g, bx, 52.f, 0.1f + sw, 26.f, pal.grass);
@@ -2605,6 +2709,10 @@ EqDisplay::EqDisplay (ScattrPanel& pn, ScattrProcessor& pr) : panel (pn), proc (
         bp[(size_t) i].gain = proc.apvts.getParameter (id + "g");
         bp[(size_t) i].q    = proc.apvts.getParameter (id + "q");
         bp[(size_t) i].slope = proc.apvts.getParameter (id + "sl");
+        bp[(size_t) i].dyn    = proc.apvts.getParameter (id + "dy");
+        bp[(size_t) i].thresh = proc.apvts.getParameter (id + "dt");
+        bp[(size_t) i].range  = proc.apvts.getParameter (id + "dr");
+        bp[(size_t) i].speed  = proc.apvts.getParameter (id + "ds");
     }
 
     addAndMakeVisible (preBtn);
@@ -2652,6 +2760,10 @@ EqCore::Band EqDisplay::readBand (int i) const
     r.gainDb = b.gain->convertFrom0to1 (b.gain->getValue());
     r.q      = b.q->convertFrom0to1 (b.q->getValue());
     r.slope  = juce::jlimit (0, EqCore::numSlopes - 1, juce::roundToInt (b.slope->convertFrom0to1 (b.slope->getValue())));
+    r.dyn    = b.dyn->getValue() > 0.5f;
+    r.thresh = b.thresh->convertFrom0to1 (b.thresh->getValue());
+    r.range  = b.range->convertFrom0to1 (b.range->getValue());
+    r.speed  = juce::jlimit (0, EqCore::numSpeeds - 1, juce::roundToInt (b.speed->convertFrom0to1 (b.speed->getValue())));
     return r;
 }
 
@@ -2687,15 +2799,43 @@ void EqDisplay::setNorm (juce::RangedAudioParameter* p, float plainValue)
 
 void EqDisplay::beginGesture (int band)
 {
-    bp[(size_t) band].freq->beginChangeGesture();
-    bp[(size_t) band].gain->beginChangeGesture();
+    beginDrag (bp[(size_t) band].freq, bp[(size_t) band].gain);
+}
+
+void EqDisplay::beginDrag (juce::RangedAudioParameter* a, juce::RangedAudioParameter* b)
+{
+    dragA = a;
+    dragB = b;
+    if (dragA != nullptr) dragA->beginChangeGesture();
+    if (dragB != nullptr) dragB->beginChangeGesture();
 }
 
 void EqDisplay::endGesture()
 {
-    if (selected < 0) return;
-    bp[(size_t) selected].freq->endChangeGesture();
-    bp[(size_t) selected].gain->endChangeGesture();
+    if (dragA != nullptr) dragA->endChangeGesture();
+    if (dragB != nullptr) dragB->endChangeGesture();
+    dragA = dragB = nullptr;
+}
+
+// where a dynamic band's threshold sits on the analyzer's own scale (the analyzer is tilted, so the line follows it)
+float EqDisplay::yOfThreshold (const EqCore::Band& b) const
+{
+    const auto p = plot();
+    const float shown = b.thresh + analyzerTilt (b.freq);
+    return p.getBottom() - juce::jlimit (0.f, 1.f, (shown - kSpecMin) / (kSpecMax - kSpecMin)) * p.getHeight();
+}
+
+int EqDisplay::hitDynHandle (juce::Point<float> pt, int band) const
+{
+    if (band < 0) return 0;
+    const auto b = readBand (band);
+    if (! b.on || ! b.dyn || ! EqCore::usesGain (b.type)) return 0;
+
+    const float x = xOfHz (b.freq);
+    const float yR = yOfDb (juce::jlimit (-kPlotDb, kPlotDb, b.gainDb + b.range));
+    if ((pt.x - x) * (pt.x - x) + (pt.y - yR) * (pt.y - yR) <= 10.f * 10.f) return 1;
+    if (std::abs (pt.x - x) <= 38.f && std::abs (pt.y - yOfThreshold (b)) <= 6.f) return 2;
+    return 0;
 }
 
 void EqDisplay::addBandAt (juce::Point<float> p)
@@ -2716,6 +2856,10 @@ void EqDisplay::addBandAt (juce::Point<float> p)
         put (bp[(size_t) i].gain, juce::jlimit (-kPlotDb, kPlotDb, dbOfY (p.y)));
         put (bp[(size_t) i].q, 1.f);
         put (bp[(size_t) i].slope, 0.f);
+        put (bp[(size_t) i].dyn, 0.f);
+        put (bp[(size_t) i].thresh, -30.f);
+        put (bp[(size_t) i].range, -6.f);
+        put (bp[(size_t) i].speed, 1.f);
         put (bp[(size_t) i].on, 1.f);
         selected = i;
         return;
@@ -2749,6 +2893,15 @@ void EqDisplay::showTypeMenu (int i)
     }
 
     m.addSeparator();
+    m.addItem (60, "Dynamic", EqCore::usesGain (cur.type), cur.dyn);   // the band reacts to the level around it
+    if (cur.dyn && EqCore::usesGain (cur.type))
+    {
+        juce::PopupMenu sp;
+        for (int k = 0; k < EqCore::numSpeeds; ++k) sp.addItem (70 + k, EqCore::speedName (k), true, k == cur.speed);
+        m.addSubMenu ("Dynamic speed", sp);
+    }
+
+    m.addSeparator();
     m.addItem (100, "Remove band");
 
     juce::Component::SafePointer<EqDisplay> safe (this);
@@ -2757,6 +2910,16 @@ void EqDisplay::showTypeMenu (int i)
         if (safe == nullptr || result <= 0) return;
         Scope undoScope (*safe);   // everything below is one undo step
         if (result == 100) { safe->removeBand (i); return; }
+
+        if (result == 60 || (result >= 70 && result < 70 + EqCore::numSpeeds))
+        {
+            auto* par = result == 60 ? safe->bp[(size_t) i].dyn : safe->bp[(size_t) i].speed;
+            const float v = result == 60 ? (safe->readBand (i).dyn ? 0.f : 1.f) : (float) (result - 70);
+            par->beginChangeGesture();
+            safe->setNorm (par, v);
+            par->endChangeGesture();
+            return;
+        }
 
         if (result >= 20 && result < 20 + EqCore::numSlopes)
         {
@@ -2847,6 +3010,10 @@ void EqDisplay::applySnapshot (const Snap& s)
         put (p.gain, b.gainDb);
         put (p.q, b.q);
         put (p.slope, (float) b.slope);
+        put (p.dyn, b.dyn ? 1.f : 0.f);
+        put (p.thresh, b.thresh);
+        put (p.range, b.range);
+        put (p.speed, (float) b.speed);
         put (p.on, b.on ? 1.f : 0.f);
     }
     selected = hover = -1;
@@ -2877,7 +3044,10 @@ void EqDisplay::mouseMove (const juce::MouseEvent& e)
 {
     hover = hitBand (e.position);
     hoverPt = e.position;
-    setMouseCursor (hover >= 0 ? juce::MouseCursor::PointingHandCursor : juce::MouseCursor::NormalCursor);
+    const int fb = selected >= 0 ? selected : hover;
+    const bool overHandle = hover < 0 && hitDynHandle (e.position, fb) != 0;
+    setMouseCursor (hover >= 0 ? juce::MouseCursor::PointingHandCursor
+                               : overHandle ? juce::MouseCursor::UpDownResizeCursor : juce::MouseCursor::NormalCursor);
 }
 
 void EqDisplay::mouseExit (const juce::MouseEvent&)
@@ -2895,10 +3065,24 @@ void EqDisplay::mouseDown (const juce::MouseEvent& e)
         else if (plot().expanded (6.f).contains (e.position)) showPlotMenu (e.position);
         return;
     }
-    if (hit < 0) { selected = -1; return; }
+    if (hit < 0)
+    {
+        // not on a node: maybe on the dynamic handles of the band that is selected (or under the pointer)
+        const int fb = selected >= 0 ? selected : hover;
+        const int h = hitDynHandle (e.position, fb);
+        if (h == 0) { selected = -1; return; }
+
+        selected = fb;
+        dragging = true;
+        dragKind = h;
+        dragBefore = snapshot();
+        beginDrag (h == 1 ? bp[(size_t) fb].range : bp[(size_t) fb].thresh);
+        return;
+    }
 
     selected = hit;
     dragging = true;
+    dragKind = 0;
     dragBefore = snapshot();
     beginGesture (hit);
 }
@@ -2908,6 +3092,18 @@ void EqDisplay::mouseDrag (const juce::MouseEvent& e)
     if (! dragging || selected < 0) return;
 
     const auto b = readBand (selected);
+    if (dragKind == 1)   // the range handle: its height is the gain the band moves to
+    {
+        setNorm (bp[(size_t) selected].range, juce::jlimit (-kPlotDb, kPlotDb, dbOfY (e.position.y) - b.gainDb));
+        return;
+    }
+    if (dragKind == 2)   // the threshold line, read off the analyzer's scale
+    {
+        const auto pl = plot();
+        const float shown = kSpecMin + (pl.getBottom() - e.position.y) / pl.getHeight() * (kSpecMax - kSpecMin);
+        setNorm (bp[(size_t) selected].thresh, juce::jlimit (-80.f, 0.f, shown - analyzerTilt (b.freq)));
+        return;
+    }
     setNorm (bp[(size_t) selected].freq, hzOfX (e.position.x));
     if (EqCore::usesGain (b.type))
         setNorm (bp[(size_t) selected].gain, juce::jlimit (-kPlotDb, kPlotDb, dbOfY (e.position.y)));
@@ -2917,11 +3113,13 @@ void EqDisplay::mouseUp (const juce::MouseEvent&)
 {
     if (dragging) { endGesture(); record (dragBefore); }
     dragging = false;
+    dragKind = 0;
 }
 
 void EqDisplay::mouseDoubleClick (const juce::MouseEvent& e)
 {
     const int hit = hitBand (e.position);
+    if (hit < 0 && hitDynHandle (e.position, selected >= 0 ? selected : hover) != 0) return;   // a handle, not empty space
     if (hit >= 0) { Scope undoScope (*this); removeBand (hit); }
     else if (plot().expanded (6.f).contains (e.position)) addBandAt (e.position);
 }
@@ -3089,13 +3287,16 @@ void EqDisplay::paint (juce::Graphics& g)
     std::array<EqCore::Band, EqCore::numBands> bands;
     std::array<EqCore::Sections, EqCore::numBands> cf;
     bool any = false;
+    const bool idle = staleTicks > 3;   // nothing is playing: dynamic bands rest at their own gain
     for (int i = 0; i < EqCore::numBands; ++i)
     {
         bands[(size_t) i] = readBand (i);
         if (bands[(size_t) i].on)
         {
-            const auto& b = bands[(size_t) i];
-            cf[(size_t) i] = EqCore::designBand (b, sr);
+            auto eff = bands[(size_t) i];   // what the audio is doing right now: a dynamic band is drawn where it currently is
+            if (eff.dyn && EqCore::usesGain (eff.type) && ! idle)
+                eff.gainDb += eff.range * proc.eqDynAmt[i].load (std::memory_order_relaxed);
+            cf[(size_t) i] = EqCore::designBand (eff, sr);
             any = true;
         }
     }
@@ -3153,8 +3354,50 @@ void EqDisplay::paint (juce::Graphics& g)
         g.drawText ("double-click to add a band  -  up to 24", pl.withTrimmedBottom (pl.getHeight() * 0.18f), juce::Justification::centred);
     }
 
-    // ---------- band nodes
+    // ---------- dynamic bands: a ghost node where the gain goes at full effect, joined to the band by a dashed line;
+    //            the focused band also shows its threshold, which can be dragged against the analyzer
     g.restoreState();
+    {
+        const int fb = dragging ? selected : (hover >= 0 ? hover : selected);
+        for (int i = 0; i < EqCore::numBands; ++i)
+        {
+            const auto& b = bands[(size_t) i];
+            if (! b.on || ! b.dyn || ! EqCore::usesGain (b.type)) continue;
+
+            const bool hot = (i == fb);
+            const auto col = bandColour (i);
+            const auto n = nodePos (i);
+            const float yT = yOfDb (juce::jlimit (-kPlotDb, kPlotDb, b.gainDb + b.range));
+            const float a = hot ? 1.f : 0.4f;
+
+            const float dash[2] = { 3.f, 3.f };
+            g.setColour (col.withAlpha (0.75f * a));
+            g.drawDashedLine (juce::Line<float> (n.x, n.y, n.x, yT), dash, 2, 1.2f);
+            g.setColour (juce::Colours::black.withAlpha (0.35f * a));
+            g.fillEllipse (n.x - 5.f, yT - 4.f, 10.f, 10.f);
+            g.setColour (col.withAlpha (0.25f * a));
+            g.fillEllipse (n.x - 6.f, yT - 6.f, 12.f, 12.f);
+            g.setColour (col.withAlpha (0.95f * a));
+            g.drawEllipse (n.x - 6.f, yT - 6.f, 12.f, 12.f, 1.5f);
+            juce::Path arrow;   // a tiny triangle showing which way the gain moves
+            const float dir = b.range < 0.f ? 1.f : -1.f;
+            arrow.addTriangle (n.x - 3.f, yT - 1.5f * dir, n.x + 3.f, yT - 1.5f * dir, n.x, yT + 2.5f * dir);
+            g.fillPath (arrow);
+
+            if (hot)
+            {
+                const float yh = yOfThreshold (b);
+                g.setColour (col.withAlpha (0.18f));
+                g.fillRoundedRectangle (n.x - 38.f, yh - 4.f, 76.f, 8.f, 4.f);
+                g.setColour (col.withAlpha (0.9f));
+                g.fillRoundedRectangle (n.x - 38.f, yh - 1.f, 76.f, 2.f, 1.f);
+                g.fillEllipse (n.x - 41.f, yh - 3.f, 6.f, 6.f);
+                g.fillEllipse (n.x + 35.f, yh - 3.f, 6.f, 6.f);
+            }
+        }
+    }
+
+    // ---------- band nodes
     for (int i = 0; i < EqCore::numBands; ++i)
     {
         if (! bands[(size_t) i].on) continue;
@@ -3171,6 +3414,11 @@ void EqDisplay::paint (juce::Graphics& g)
         g.fillEllipse (n.x - r, n.y - r, r * 2.f, r * 2.f);
         g.setColour (juce::Colours::white.withAlpha (hot ? 0.95f : 0.7f));
         g.drawEllipse (n.x - r, n.y - r, r * 2.f, r * 2.f, 1.3f);
+        if (bands[(size_t) i].dyn && EqCore::usesGain (bands[(size_t) i].type))   // a second ring marks a dynamic band
+        {
+            g.setColour (col.withAlpha (0.8f));
+            g.drawEllipse (n.x - r - 3.f, n.y - r - 3.f, (r + 3.f) * 2.f, (r + 3.f) * 2.f, 1.f);
+        }
         g.setColour (pal.soil.darker (0.4f));
         g.setFont (serif (i >= 9 ? 9.5f : 11.f, true));
         g.drawText (juce::String (i + 1), juce::Rectangle<float> (n.x - r, n.y - r, r * 2.f, r * 2.f), juce::Justification::centred);
@@ -3187,6 +3435,10 @@ void EqDisplay::paint (juce::Graphics& g)
                         + (EqCore::usesQ (b.type) ? "Q " + juce::String (b.q, 2) : juce::String())
                         + (EqCore::isCut (b.type) ? juce::String ("   ") + EqCore::slopeName (b.slope) : juce::String());
         l2 = l2.trim();
+        const bool isDyn = b.dyn && EqCore::usesGain (b.type);
+        const juce::String l3 = isDyn ? "dynamic  " + juce::String (b.thresh, 0) + " dB  " + (b.range >= 0.f ? "+" : "") + juce::String (b.range, 1)
+                                          + " dB  " + EqCore::speedName (b.speed)
+                                      : juce::String();
 
         g.setFont (serif (12.f));
         auto textW = [&] (const juce::String& t)
@@ -3195,7 +3447,7 @@ void EqDisplay::paint (juce::Graphics& g)
             ga.addLineOfText (g.getCurrentFont(), t, 0.f, 0.f);
             return ga.getBoundingBox (0, -1, true).getWidth();
         };
-        const float w = juce::jmax (textW (l1), textW (l2)) + 18.f, h = 36.f;
+        const float w = juce::jmax (juce::jmax (textW (l1), textW (l2)), textW (l3)) + 18.f, h = isDyn ? 52.f : 36.f;
         float bx = juce::jlimit (4.f, (float) getWidth() - w - 4.f, n.x - w * 0.5f);
         float by = n.y - 18.f - h;
         if (by < 2.f) by = n.y + 18.f;
@@ -3207,10 +3459,16 @@ void EqDisplay::paint (juce::Graphics& g)
         g.fillRoundedRectangle (box, 8.f);
         g.setColour (bandColour (info).withAlpha (0.8f));
         g.drawRoundedRectangle (box.reduced (0.5f), 8.f, 1.1f);
+        const float rh = isDyn ? 16.f : 17.f;
         g.setColour (pal.ink);
-        g.drawText (l1, box.withHeight (h * 0.5f).translated (0.f, 3.f), juce::Justification::centred);
+        g.drawText (l1, juce::Rectangle<float> (box.getX(), box.getY() + 3.f, w, rh), juce::Justification::centred);
         g.setColour (pal.dim);
-        g.drawText (l2, box.withTrimmedTop (h * 0.5f).translated (0.f, -1.f), juce::Justification::centred);
+        g.drawText (l2, juce::Rectangle<float> (box.getX(), box.getY() + 3.f + rh, w, rh), juce::Justification::centred);
+        if (isDyn)
+        {
+            g.setColour (bandColour (info).withAlpha (0.9f));
+            g.drawText (l3, juce::Rectangle<float> (box.getX(), box.getY() + 3.f + 2.f * rh, w, rh), juce::Justification::centred);
+        }
     }
 }
 
@@ -3450,11 +3708,11 @@ void SpectralOverlay::timerCallback()
     const double nowMs = juce::Time::getMillisecondCounterHiRes();
     const float dt = juce::jlimit (0.f, 0.1f, (float) ((nowMs - lastMs) * 0.001));
     lastMs = nowMs;
-    anim += dt;
+    if (! proc.setNoAnim.load()) anim += dt;
 
     // fade the window in and out
     const float before = progress;
-    progress = juce::jlimit (0.f, 1.f, progress + (closing ? -1.f : 1.f) * dt / 0.22f);
+    progress = juce::jlimit (0.f, 1.f, progress + (closing ? -1.f : 1.f) * dt / (proc.setNoAnim.load() ? 0.001f : 0.22f));
     if (progress != before || progress < 1.f)
     {
         const float a = smooth01 (progress);
