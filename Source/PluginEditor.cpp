@@ -208,7 +208,7 @@ const Tip kTips[42] = {
     { "(retired)",     "" },
     { "echo",          "Turns the echo on or off." },
     { "reverb",        "Turns the reverb on or off." },
-    { "spectral gate", "Opens the spectral gate, which keeps or removes each frequency depending on whether it is above or below a cutoff. Lit while on. Right-click to switch it on or off." },
+    { "spectral gate", "Opens the spectral gate, which keeps or removes each frequency depending on whether it is above or below a cutoff (measured in dB below the loudest frequency of the moment). Lit while on. Right-click to switch it on or off." },
     { "phaser",        "Turns the phaser on or off." },
     { "chorus",        "Turns the chorus on or off." },
     { "equalizer",     "Double-click to add a band (up to 24), drag a dot to move it, scroll over it to change its width, hold Shift and scroll to change a cut's slope, right-click it for its shape, slope and dynamic mode. Ctrl+Z undoes." },
@@ -3665,7 +3665,7 @@ SpectralOverlay::SpectralOverlay (ScattrPanel& p, ScattrProcessor& pr) : panel (
         auto* par = proc.apvts.getParameter ("swin");
         const int cur = (int) proc.apvts.getRawParameterValue ("swin")->load();
         par->beginChangeGesture();
-        par->setValueNotifyingHost (par->convertTo0to1 ((float) ((cur + 1) % 4)));
+        par->setValueNotifyingHost (par->convertTo0to1 ((float) ((cur + 1) % 7)));
         par->endChangeGesture();
     };
 
@@ -3834,8 +3834,8 @@ void SpectralOverlay::timerCallback()
         knobs[2].label.setAlpha (a);
     }
 
-    static const char* wn[4] = { "512", "1024", "2048", "4096" };
-    const juce::String wt = wn[juce::jlimit (0, 3, (int) proc.apvts.getRawParameterValue ("swin")->load())];
+    static const char* wn[7] = { "128", "256", "512", "1024", "2048", "4096", "8192" };
+    const juce::String wt = wn[juce::jlimit (0, 6, (int) proc.apvts.getRawParameterValue ("swin")->load())];
     if (winBtn.getButtonText() != wt) winBtn.setButtonText (wt);
 
     // analyzer: follow the audio thread's frames; fall away when nothing is being processed
@@ -3979,14 +3979,16 @@ void SpectralOverlay::paintAnalyzerLive (juce::Graphics& g)
         }
     }
 
-    // the cutoff curve, drawn from the very same formula the audio uses (tilt included)
+    // the cutoff curve, drawn from the very same formula the audio uses (tilt included). The cutoff is measured
+    // down from the loudest bin of the moment, so the curve rides along with it.
     const auto p = readParams();
+    const float refDb = live ? juce::jlimit (kFloorDb, 6.f, proc.spec.dispRefDb.load (std::memory_order_relaxed)) : 0.f;
     juce::Path thrLine;
     bool first = true;
     for (int i = 0; i <= (int) plot.getWidth(); i += 2)
     {
         const float hz = SpectralGate::fMinHz * std::pow (1000.f, (float) i / plot.getWidth());
-        const float x = plot.getX() + (float) i, y = dbY (SpectralGate::thresholdDb (p, hz));
+        const float x = plot.getX() + (float) i, y = dbY (refDb + SpectralGate::thresholdDb (p, hz));
         if (first) { thrLine.startNewSubPath (x, y); first = false; }
         else         thrLine.lineTo (x, y);
     }

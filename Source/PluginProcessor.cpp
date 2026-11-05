@@ -109,7 +109,7 @@ juce::AudioProcessorValueTreeState::ParameterLayout makeLayout()
 
     // spectral gate (the pop-out window). Off by default.
     p.push_back (std::make_unique<juce::AudioParameterBool> (juce::ParameterID { "son", 1 }, "Spectral Gate On", false));
-    add ("sthr",     "Gate Cutoff Amplitude", -90.f, 0.f,  -44.4f, 1.f);   // bins above it are "strong", bins below it are "weak"
+    add ("sthr",     "Gate Cutoff Amplitude", -90.f, 0.f,  -24.f,  1.f);   // dB below the loudest bin: bins above it are "strong", bins below it are "weak"
     add ("sbal",     "Gate Weak/Strong Balance", 0.f, 1.f,  0.7f,  1.f);   // 0 = only weak bins pass, 0.5 = all pass, 1 = only strong bins pass
     p.push_back (std::make_unique<juce::AudioParameterBool> (juce::ParameterID { "stilton", 1 }, "Gate Enable Tilt", false));
     add ("stilt",    "Gate Tilt",           0.f,   1.f,    0.5f,  1.f);       // slants the cutoff across frequency (0.5 = flat)
@@ -118,7 +118,7 @@ juce::AudioProcessorValueTreeState::ParameterLayout makeLayout()
     add ("srelease", "Gate Release",        5.f,   1000.f, 90.f,  0.4f);      // how fast a bin turns weak (ms)
     add ("ssmooth",  "Gate Smooth",         0.f,   1.f,    0.3f,  1.f);       // how far a strong bin's influence spreads to its neighbours
     p.push_back (std::make_unique<juce::AudioParameterChoice> (
-        juce::ParameterID { "swin", 1 }, "Gate Window", juce::StringArray { "512", "1024", "2048", "4096" }, 2));
+        juce::ParameterID { "swin", 1 }, "Gate Window", juce::StringArray { "128", "256", "512", "1024", "2048", "4096", "8192" }, 4));
 
     return { p.begin(), p.end() };
 }
@@ -771,7 +771,7 @@ void ScattrProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::Midi
         sp.holdMs     = prm ("shold");
         sp.releaseMs  = prm ("srelease");
         sp.smooth     = prm ("ssmooth");
-        sp.order      = SpectralGate::minOrder + juce::jlimit (0, 3, (int) prm ("swin"));
+        sp.order      = SpectralGate::minOrder + juce::jlimit (0, 6, (int) prm ("swin"));
         const bool sOn = prm ("son") > 0.5f;
 
         spec.process (L, R, numSamples, sp, sOn);

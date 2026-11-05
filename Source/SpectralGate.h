@@ -8,11 +8,15 @@
 // ---------------------------------------------------------------------------------------------
 // Spectral gate: "only allow frequency components above or below a particular cut-off amplitude".
 //
-// Every FFT bin is measured against the cutoff amplitude and counts as STRONG (at or above it) or WEAK:
-//   * BALANCE decides how much of each side is let through:
+// Every FFT bin is measured against the cutoff amplitude and counts as STRONG (at or above it) or WEAK.
+// The cutoff is RELATIVE: it is "dB below the loudest bin of the moment", so the gate behaves the same
+// whatever level the signal arrives at (turn the input up or down and the same partials survive).
+//   * BALANCE decides how much of each side is let through. The side being held back is lowered in dB,
+//     linearly with the knob, down to -80 dB at the ends:
 //        0.0  only the weak bins pass   (the loud parts are removed, what is left is the quiet "air")
 //        0.5  everything passes         (the gate is neutral)
 //        1.0  only the strong bins pass (a classic gate: everything under the cutoff is removed)
+//     e.g. 0.7 holds the weak bins back by 32 dB, 0.3 holds the strong bins back by 32 dB.
 //   * TILT slants the cutoff across the spectrum (0.5 = flat), pivoting at 1 kHz. Only while enabled.
 //
 // What makes the gating accurate rather than merely "bin by bin":
@@ -35,7 +39,7 @@
 class SpectralGate
 {
 public:
-    static constexpr int minOrder = 9, maxOrder = 12;            // 512 .. 4096
+    static constexpr int minOrder = 7, maxOrder = 13;            // 128 .. 8192
     static constexpr int maxN = 1 << maxOrder;
     static constexpr int overlap = 8;
     static constexpr int numBands = 64;                           // analyzer bands (log spaced)
@@ -44,10 +48,13 @@ public:
     static constexpr float maxTiltDbPerOct = 9.f;                 // tilt 0 / 1 = -9 / +9 dB per octave
     static constexpr float hysteresisDb = 2.f;
     static constexpr int   lobeBins = 2;                          // main-lobe protection radius
+    static constexpr float holdBackDb = 80.f;                     // how far the held-back side drops at the end of the balance knob
+    static constexpr float refFloorDb = -72.f;                    // the "loudest bin" is never taken to be quieter than this (near-silence is not boosted into the gate)
+    static constexpr float refFallDbPerSec = 40.f;                // how fast the remembered loudest level falls when the sound gets quieter
 
     struct Params
     {
-        float cutoffDb = -44.4f;    // cutoff amplitude; 0 dB = a full-scale sine in one bin
+        float cutoffDb = -24.f;     // cutoff amplitude in dB BELOW the loudest bin (0 = only the loudest bin is strong)
         float balance = 0.7f;       // 0..1: 0 = only weak bins pass, 0.5 = all pass, 1 = only strong bins pass
         bool  tiltOn = false;
         float tilt = 0.5f;          // 0..1, 0.5 = flat
@@ -55,10 +62,10 @@ public:
         float holdMs = 25.f;        // a bin stays strong this long after it drops below the cutoff
         float releaseMs = 90.f;     // how fast a bin turns weak
         float smooth = 0.3f;        // 0..1: how far a strong bin's influence spreads to its neighbours
-        int   order = 11;           // window = 2^order
+        int   order = 11;           // window = 2^order (7 .. 13 = 128 .. 8192)
     };
 
-    // The cutoff at a frequency (shared with the UI so the curve it draws is the real one)
+    // The cutoff at a frequency, in dB relative to the loudest bin (the UI draws dispRefDb + this)
     static float thresholdDb (const Params& p, float hz)
     {
         float t = p.cutoffDb;
@@ -68,8 +75,9 @@ public:
     }
 
     // Linear gain of the weak bins / the strong bins for a balance setting
-    static float weakGain (const Params& p)   { return std::min (1.f, 2.f * (1.f - clamp01 (p.balance))); }
-    static float strongGain (const Params& p) { return std::min (1.f, 2.f * clamp01 (p.balance)); }
+    // (the held-back side falls linearly in dB: 0 dB at the middle of the knob, -holdBackDb at the end)
+    static float weakGain (const Params& p)   { return std::pow (10.f, -holdBackDb * clamp01 (2.f * p.balance - 1.f) / 20.f); }
+    static float strongGain (const Params& p) { return std::pow (10.f, -holdBackDb * clamp01 (1.f - 2.f * p.balance) / 20.f); }
 
     SpectralGate()
     {
@@ -86,6 +94,7 @@ public:
         for (auto* v : { &lvDb, &outDb, &holdLeft, &strongPrev, &o0, &o1, &oS }) v->assign ((size_t) maxN / 2 + 1, 0.f);
         for (auto& a : dispIn)  a.store (-200.f);
         for (auto& a : dispOut) a.store (-200.f);
+        dispRefDb.store (refFloorDb);
         setOrder (11);
     }
 
@@ -151,6 +160,7 @@ public:
 
     // For the analyzer (written by the audio thread once per hop, read by the UI). Levels in dB, 0 dB = full-scale sine.
     std::atomic<float> dispIn[numBands], dispOut[numBands];
+    std::atomic<float> dispRefDb { -72.f };   // the loudest bin of the moment (dB): the 0 point of the cutoff
     std::atomic<unsigned> frames { 0 };
 
 private:
@@ -161,6 +171,7 @@ private:
         std::fill (holdLeft.begin(), holdLeft.end(), 0.f);
         std::fill (strongPrev.begin(), strongPrev.end(), 0.f);
         primed = false;   // the first frame sets every bin's smoothed state straight to its target
+        refDb = refFloorDb;
     }
 
     void setOrder (int o)
@@ -255,7 +266,8 @@ private:
         const float gWeak = weakGain (p), gStrong = strongGain (p);
         const float dbWeak = 20.f * std::log10 (std::max (gWeak, 1.0e-4f)), dbStrong = 20.f * std::log10 (std::max (gStrong, 1.0e-4f));   // -80 dB floor
 
-        // 1) measure every bin and decide strong / weak (with hysteresis and hold)
+        // 1a) measure every bin, and find the loudest one (the DC bin is left out: a DC offset must not become the reference)
+        float frameMax = -200.f;
         for (int k = 0; k <= half; ++k)
         {
             const int k2 = (N - k) & (N - 1);
@@ -266,9 +278,20 @@ private:
             const float mag = std::sqrt (std::max (lr * lr + li * li, rr * rr + ri * ri)) * norm;
             const float lv = 20.f * std::log10 (mag + 1.0e-9f);
             lvDb[(size_t) k] = lv;
+            if (k > 0) frameMax = std::max (frameMax, lv);
+        }
+
+        // the reference level: jumps up at once to a louder frame, falls slowly when the sound gets quieter
+        refDb = std::max (std::max (frameMax, refFloorDb), refDb - refFallDbPerSec * hopSec);
+        dispRefDb.store (refDb, std::memory_order_relaxed);
+
+        // 1b) decide strong / weak against the cutoff (with hysteresis and hold)
+        for (int k = 0; k <= half; ++k)
+        {
+            const float lv = lvDb[(size_t) k];
 
             // (the DC bin is judged with the first bin's cutoff)
-            const float thr = thresholdDb (p, (float) std::max (k, 1) * binHz);
+            const float thr = refDb + thresholdDb (p, (float) std::max (k, 1) * binHz);
             bool strong = lv >= (strongPrev[(size_t) k] > 0.5f ? thr - hysteresisDb : thr);
 
             if (strong)                       holdLeft[(size_t) k] = holdSec;
@@ -358,6 +381,7 @@ private:
     int inPos = 0, accPos = 0, counter = 0;
     float norm = 1.f, en = 0.f;
     bool wasRunning = false, primed = false;
+    float refDb = -72.f;   // remembered loudest-bin level (dB)
 
     std::vector<float> twC, twS, inL, inR, accL, accR, re, im, win, lvDb, outDb;
     std::vector<float> holdLeft, strongPrev, o0, o1, oS;   // per-bin: hold timer, last decision, raw / spread / smoothed "strongness"
