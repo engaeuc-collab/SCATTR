@@ -150,10 +150,9 @@ private:
     bool phaserActive = false, chorusActive = false;
 
     EqCore::Processor eq;
-    std::atomic<float>* eqParam[EqCore::numBands][5] {};   // on, type, freq, gain, q (cached so the audio thread never looks them up by name)
+    std::atomic<float>* eqParam[EqCore::numBands][6] {};   // on, type, freq, gain, q, slope (cached so the audio thread never looks them up by name)
 
-    juce::dsp::StateVariableTPTFilter<float> filter;
-    juce::SmoothedValue<float, juce::ValueSmoothingTypes::Linear> fOnSm, dOnSm, rOnSm;   // bypass fades
+    juce::SmoothedValue<float, juce::ValueSmoothingTypes::Linear> dOnSm, rOnSm;   // bypass fades
     std::vector<float> revL, revR, preBuf[2];                                           // reverb scratch + pre-delay
     int preW = 0, preSize = 1;
     bool revActive = false;
@@ -162,7 +161,6 @@ private:
     int delayW = 0, delaySize = 1;
     float fbLp[2] {};
     juce::SmoothedValue<float, juce::ValueSmoothingTypes::Linear> delayTimeSm;
-    juce::SmoothedValue<float, juce::ValueSmoothingTypes::Multiplicative> cutoffSm;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (ScattrProcessor)
 };

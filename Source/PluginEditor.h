@@ -208,19 +208,19 @@ private:
     juce::Rectangle<float> motionPanel() const { return { 18.f, 384.f, 744.f, 130.f }; }
     // FX tab: the equalizer across the top, then two rows of effect cards whose widths follow their knob counts,
     // so every knob sits on the same spacing and nothing is left empty.
-    //   row 1: filter (4 knobs) | phaser (5)        row 2: chorus (3) | delay (3) | reverb (3)
+    //   row 1: phaser (5 knobs) | chorus (3)        row 2: delay (3) | reverb (3)
     juce::Rectangle<float> eqPanel() const { return { 18.f, 76.f, 744.f, 172.f }; }
-    juce::Rectangle<float> fxPanel (int k) const   // 0 filter, 1 phaser, 2 chorus, 3 delay, 4 reverb
+    juce::Rectangle<float> fxPanel (int k) const   // 0 phaser, 1 chorus, 2 delay, 3 reverb
     {
         constexpr float W = 744.f, pad = 24.f, gap = 8.f;
         if (k < 2)
         {
-            const float u = (W - 2.f * pad - gap) / 9.f;
-            const float w0 = 4.f * u + pad, w1 = 5.f * u + pad;
+            const float u = (W - 2.f * pad - gap) / 8.f;
+            const float w0 = 5.f * u + pad, w1 = 3.f * u + pad;
             return k == 0 ? juce::Rectangle<float> (18.f, 256.f, w0, 124.f)
                           : juce::Rectangle<float> (18.f + w0 + gap, 256.f, w1, 124.f);
         }
-        const float w = (W - 2.f * gap) / 3.f;
+        const float w = (W - gap) / 2.f;
         return { 18.f + (float) (k - 2) * (w + gap), 388.f, w, 126.f };
     }
     juce::Rectangle<float> waveInner() const  { return waveRect().reduced (10.f, 0.f); }
@@ -238,7 +238,9 @@ private:
         std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> attach;
     };
 
-    // knobs 0..7, 17..19 and 21 live on the grains tab; 8..16, 20 and 22..29 (phaser, chorus) on the FX tab
+    // knobs 0..7, 17..19 and 21 live on the grains tab; 11..16 and 22..29 (delay, reverb, phaser, chorus) on the FX tab.
+    // 8, 9, 10 and 20 were the filter's knobs: the filter is gone, but the slots stay so every other knob keeps its index.
+    static bool retiredKnob (size_t i) { return i == 8 || i == 9 || i == 10 || i == 20; }
     static bool onGrainsTab (size_t knobIndex) { return knobIndex <= 7 || (knobIndex >= 17 && knobIndex <= 19) || knobIndex == 21; }
 
     ScattrProcessor& proc;
@@ -252,10 +254,9 @@ private:
     std::array<Knob, 30> knobs;
     std::array<juce::TextButton, 2> tabBtn;
     juce::TextButton loadBtn { "PLANT" }, clearBtn { "CLEAR" };
-    juce::TextButton typeBtn { "LP" };
     juce::TextButton spaceBtn { "HALL" };
-    juce::ToggleButton fonBtn { "ON" }, donBtn { "ON" }, ronBtn { "ON" }, ponBtn { "ON" }, conBtn { "ON" };   // per-effect bypass
-    std::unique_ptr<juce::AudioProcessorValueTreeState::ButtonAttachment> fonAttach, donAttach, ronAttach, ponAttach, conAttach;
+    juce::ToggleButton donBtn { "ON" }, ronBtn { "ON" }, ponBtn { "ON" }, conBtn { "ON" };   // per-effect bypass
+    std::unique_ptr<juce::AudioProcessorValueTreeState::ButtonAttachment> donAttach, ronAttach, ponAttach, conAttach;
     std::unique_ptr<EqDisplay> eqView;               // the FX tab's equalizer (spectrum, curve and draggable bands)
     juce::TextButton scaleBtn { "100%" };
     juce::TextButton themeBtn { "summer" };
@@ -301,12 +302,12 @@ private:
 
 // ---------------------------------------------------------------------------------------------
 // The FX tab's equalizer. A glass plot with the live spectrum behind a combined response curve, and up to
-// eight draggable bands:
+// 24 draggable bands:
 //   drag a node        moves its frequency and gain          scroll over a node   changes its width (Q)
 //   double-click       adds a band here / removes the one clicked
-//   right-click        picks the band's shape (bell, shelves, cuts, notch)
-// The curve is computed from the very same filter maths the audio runs (EqCore). The active filter's own
-// response is drawn as a dashed line, so the plot shows everything that is shaping the tone.
+//   right-click        on a node: its shape (bell, shelves, tilt, cuts, notch, band pass) and, for cuts, its slope
+//                      on empty space: add a band here, or clear them all
+// The curve is computed from the very same filter maths the audio runs (EqCore).
 // ---------------------------------------------------------------------------------------------
 class EqDisplay : public juce::Component
 {
@@ -328,7 +329,7 @@ public:
     juce::ToggleButton preBtn { "PRE" };   // also draw the spectrum going INTO the equalizer
 
 private:
-    struct BandP { juce::RangedAudioParameter *on = nullptr, *type = nullptr, *freq = nullptr, *gain = nullptr, *q = nullptr; };
+    struct BandP { juce::RangedAudioParameter *on = nullptr, *type = nullptr, *freq = nullptr, *gain = nullptr, *q = nullptr, *slope = nullptr; };
 
     juce::Rectangle<float> plot() const { return getLocalBounds().toFloat().withTrimmedLeft (12.f).withTrimmedRight (36.f).withTrimmedTop (28.f).withTrimmedBottom (22.f); }
     float xOfHz (float hz) const;
@@ -344,6 +345,7 @@ private:
     void addBandAt (juce::Point<float> p);
     void removeBand (int i);
     void showTypeMenu (int i);
+    void showPlotMenu (juce::Point<float> p);
     static juce::Colour bandColour (int i);
     void computeSpectrum (const std::atomic<float>* ring, std::vector<float>& out, std::vector<float>& smoothed, bool stale);
 

@@ -147,9 +147,9 @@ inline float buttonLit (const juce::Button& b)
     return b.getToggleState() ? 1.f : 0.f;
 }
 
-// Hover notes. Indices 0..29 are the knobs (same order as the `knobs` array); then DRIFT, TUNE, filter mode,
-// reverb space, the filter / echo / reverb on buttons, the spectral gate button, phaser on, chorus on, and finally
-// the equalizer plot and its PRE button. ScattrPanel::hoveredControl() returns these indices.
+// Hover notes. Indices 0..29 are the knobs (same order as the `knobs` array); then DRIFT, TUNE, (retired: filter mode),
+// reverb space, (retired: filter on), the echo / reverb on buttons, the spectral gate button, phaser on, chorus on, and finally
+// the equalizer plot and its PRE button. The retired entries are never shown; they only keep the numbering. ScattrPanel::hoveredControl() returns these indices.
 struct Tip { const char* name; const char* text; };
 const Tip kTips[42] = {
     { "seed size",     "Length of each grain. Short is gritty, long is smooth and recognisable." },
@@ -160,9 +160,9 @@ const Tip kTips[42] = {
     { "bloom",         "Seconds each sample plays before the next one, when no key is held." },
     { "rest",          "Silence between samples, in seconds, when no key is held." },
     { "sun",           "Overall volume of the grains." },
-    { "cutoff",        "The frequency where the filter starts to cut." },
-    { "reso",          "Boosts the sound around the cutoff for a sharper, ringing tone." },
-    { "drive",         "Adds warm saturation after the filter." },
+    { "(retired)",     "" },
+    { "(retired)",     "" },
+    { "(retired)",     "" },
     { "time",          "Echo delay time as a note length, synced to your host's tempo." },
     { "feedback",      "How many times the echo repeats." },
     { "echo mix",      "Level of the echoes against the dry sound." },
@@ -172,7 +172,7 @@ const Tip kTips[42] = {
     { "master tune",   "Fine tuning for everything, in cents." },
     { "cycle",         "(retired) Held keys now play each sample all the way through." },
     { "random",        "Chance that a grain is borrowed from a different sample." },
-    { "filter mix",    "Blends between the dry sound and the filtered sound." },
+    { "(retired)",     "" },
     { "pan spread",    "Scatters grains randomly left and right. Zero keeps them centred." },
     { "phaser rate",   "How fast the phaser sweeps up and down." },
     { "phaser depth",  "How far the sweep reaches around its centre." },
@@ -184,15 +184,15 @@ const Tip kTips[42] = {
     { "chorus mix",    "Blends the chorus with the dry sound." },
     { "drift",         "On: plays by itself. Off: only sounds while a key is held." },
     { "tune",          "On: samples retune to the key you play. Off: keys just transpose them." },
-    { "filter mode",   "Click to cycle between low-pass, high-pass and band-pass." },
+    { "(retired)",     "" },
     { "reverb space",  "Click to cycle between room, plate, hall and cathedral." },
-    { "filter",        "Turns the filter on or off." },
+    { "(retired)",     "" },
     { "echo",          "Turns the echo on or off." },
     { "reverb",        "Turns the reverb on or off." },
     { "spectral gate", "Opens the spectral gate, which keeps or removes each frequency depending on whether it is above or below a cutoff. Lit while on. Right-click to switch it on or off." },
     { "phaser",        "Turns the phaser on or off." },
     { "chorus",        "Turns the chorus on or off." },
-    { "equalizer",     "Double-click to add a band, drag a dot to move it, scroll over it to change its width, right-click to change its shape." },
+    { "equalizer",     "Double-click to add a band (up to 24), drag a dot to move it, scroll over it to change its width, right-click it for its shape and slope." },
     { "pre",           "Also shows the sound going into the equalizer, as a thin line behind the filled spectrum." }
 };
 
@@ -733,17 +733,19 @@ ScattrPanel::ScattrPanel (ScattrProcessor& p) : proc (p)
         { "size", "seed size", 0 }, { "dens", "rain", 0 }, { "speed", "speed", 2 },
         { "wind", "wind", 2 }, { "spray", "scatter", 2 }, { "hold", "bloom", 2 },
         { "gap", "rest", 2 }, { "amp", "sun", 2 },
-        { "cutoff", "cutoff", 0 }, { "reso", "reso", 2 }, { "drive", "drive", 2 },
+        { "", "", 0 }, { "", "", 0 }, { "", "", 0 },   // 8..10: the old filter's knobs (retired)
         { "dnote", "time", -1 }, { "dfb", "feedback", 2 }, { "dmix", "echo mix", 2 },
         { "rsize", "size", 2 }, { "rdamp", "damp", 2 }, { "rmix", "reverb mix", 2 },
         { "mtune", "master tune", 0 }, { "cycle", "cycle", 2 }, { "rand", "random", 2 },
-        { "fmix", "filter mix", 2 }, { "width", "pan spread", 2 },
+        { "", "", 0 }, { "width", "pan spread", 2 },
         { "prate", "rate", 2 }, { "pdepth", "depth", 2 }, { "pcenter", "center", 0 }, { "pfb", "feedback", 2 }, { "pmix", "mix", 2 },
         { "crate", "rate", 2 }, { "cdepth", "depth", 2 }, { "cmix", "mix", 2 }
     };
 
     for (size_t i = 0; i < knobs.size(); ++i)
     {
+        if (retiredKnob (i)) continue;   // the filter is gone: these slots are never created, attached or shown
+
         auto& k = knobs[i];
         k.slider.setSliderStyle (juce::Slider::RotaryHorizontalVerticalDrag);
         k.slider.setTextBoxStyle (juce::Slider::TextBoxBelow, false, 64, 16);
@@ -791,16 +793,6 @@ ScattrPanel::ScattrPanel (ScattrProcessor& p) : proc (p)
     }
     tabBtn[0].setToggleState (true, juce::dontSendNotification);
 
-    addAndMakeVisible (typeBtn);
-    typeBtn.onClick = [this]
-    {
-        auto* par = proc.apvts.getParameter ("ftype");
-        const int cur = (int) proc.apvts.getRawParameterValue ("ftype")->load();
-        par->beginChangeGesture();
-        par->setValueNotifyingHost (par->convertTo0to1 ((float) ((cur + 1) % 3)));
-        par->endChangeGesture();
-    };
-
     addAndMakeVisible (spaceBtn);
     spaceBtn.onClick = [this]
     {
@@ -811,8 +803,7 @@ ScattrPanel::ScattrPanel (ScattrProcessor& p) : proc (p)
         par->endChangeGesture();
     };
 
-    for (auto* b : { &fonBtn, &donBtn, &ronBtn }) addAndMakeVisible (*b);
-    fonAttach = std::make_unique<juce::AudioProcessorValueTreeState::ButtonAttachment> (proc.apvts, "fon", fonBtn);
+    for (auto* b : { &donBtn, &ronBtn }) addAndMakeVisible (*b);
     donAttach = std::make_unique<juce::AudioProcessorValueTreeState::ButtonAttachment> (proc.apvts, "don", donBtn);
     ronAttach = std::make_unique<juce::AudioProcessorValueTreeState::ButtonAttachment> (proc.apvts, "ron", ronBtn);
 
@@ -822,6 +813,7 @@ ScattrPanel::ScattrPanel (ScattrProcessor& p) : proc (p)
 
     eqView = std::make_unique<EqDisplay> (*this, proc);
     addAndMakeVisible (*eqView);
+    eqView->setBounds (eqPanel().toNearestInt());   // the panel's one-and-only resized() ran (in setSize, above) before this view existed, so without this it sits at 0 x 0: invisible and deaf to the mouse
 
     addAndMakeVisible (scaleBtn);
     scaleBtn.setButtonText (juce::String (juce::roundToInt (proc.editorScale.load() * 100.f)) + "%");
@@ -956,13 +948,12 @@ void ScattrPanel::setTab (int t)
     const bool g = (t == 0);
     for (size_t i = 0; i < knobs.size(); ++i)
     {
-        const bool vis = (onGrainsTab (i) == g) && i != 18;   // 18 = "cycle": retired, samples now play all the way through
+        const bool vis = (onGrainsTab (i) == g) && i != 18 && ! retiredKnob (i);   // 18 = "cycle": retired, samples now play all the way through
         knobs[i].slider.setVisible (vis);
         knobs[i].label.setVisible (vis);
     }
-    typeBtn.setVisible (! g);
     spaceBtn.setVisible (! g);
-    for (auto* b : { &fonBtn, &donBtn, &ronBtn, &ponBtn, &conBtn }) b->setVisible (! g);
+    for (auto* b : { &donBtn, &ronBtn, &ponBtn, &conBtn }) b->setVisible (! g);
     if (eqView != nullptr) eqView->setVisible (! g);
     loadBtn.setVisible (g);
     clearBtn.setVisible (g);
@@ -1016,22 +1007,18 @@ void ScattrPanel::resized()
     {
         if (eqView != nullptr) eqView->setBounds (eqPanel().toNearestInt());
 
-        static const size_t filterKnobs[4] = { 8, 9, 10, 20 };   // cutoff, reso, drive, filter mix
         constexpr int knobH = 80;
-        for (int k = 0; k < 4; ++k) place (filterKnobs[k], fxPanel (0), 4, k, knobH);
-        for (int k = 0; k < 5; ++k) place ((size_t) (22 + k), fxPanel (1), 5, k, knobH);   // phaser: rate, depth, center, feedback, mix
-        for (int k = 0; k < 3; ++k) place ((size_t) (27 + k), fxPanel (2), 3, k, knobH);   // chorus: rate, depth, mix
-        for (int k = 0; k < 3; ++k) place ((size_t) (11 + k), fxPanel (3), 3, k, knobH);   // delay: time, feedback, echo mix
-        for (int k = 0; k < 3; ++k) place ((size_t) (14 + k), fxPanel (4), 3, k, knobH);   // reverb: size, damp, reverb mix
+        for (int k = 0; k < 5; ++k) place ((size_t) (22 + k), fxPanel (0), 5, k, knobH);   // phaser: rate, depth, center, feedback, mix
+        for (int k = 0; k < 3; ++k) place ((size_t) (27 + k), fxPanel (1), 3, k, knobH);   // chorus: rate, depth, mix
+        for (int k = 0; k < 3; ++k) place ((size_t) (11 + k), fxPanel (2), 3, k, knobH);   // delay: time, feedback, echo mix
+        for (int k = 0; k < 3; ++k) place ((size_t) (14 + k), fxPanel (3), 3, k, knobH);   // reverb: size, damp, reverb mix
 
-        // each card's on button sits in its top-right corner; the filter mode / reverb space keys sit just left of it
+        // each card's on button sits in its top-right corner; the reverb space key sits just left of its own
         auto onBounds = [&] (int card) { return juce::Rectangle<int> ((int) fxPanel (card).getRight() - 12 - 52, (int) fxPanel (card).getY() + 7, 52, 24); };
-        fonBtn.setBounds (onBounds (0));
-        ponBtn.setBounds (onBounds (1));
-        conBtn.setBounds (onBounds (2));
-        donBtn.setBounds (onBounds (3));
-        ronBtn.setBounds (onBounds (4));
-        typeBtn.setBounds  (fonBtn.getX() - 6 - 56, fonBtn.getY(), 56, 24);
+        ponBtn.setBounds (onBounds (0));
+        conBtn.setBounds (onBounds (1));
+        donBtn.setBounds (onBounds (2));
+        ronBtn.setBounds (onBounds (3));
         spaceBtn.setBounds (ronBtn.getX() - 6 - 70, ronBtn.getY(), 70, 24);
     }
 }
@@ -1231,7 +1218,7 @@ void ScattrPanel::timerCallback()
 
     // on/off buttons glide between their two looks in 0.2 s
     specBtn.setToggleState (proc.apvts.getRawParameterValue ("son")->load() > 0.5f, juce::dontSendNotification);
-    for (auto* b : { &droneBtn, &tuneBtn, &fonBtn, &donBtn, &ronBtn, &specBtn, &ponBtn, &conBtn })
+    for (auto* b : { &droneBtn, &tuneBtn, &donBtn, &ronBtn, &specBtn, &ponBtn, &conBtn })
     {
         const float target = b->getToggleState() ? 1.f : 0.f;
         float v = buttonLit (*b);
@@ -1256,26 +1243,19 @@ void ScattrPanel::timerCallback()
 
     updateEq();
 
-    static const char* ft[3] = { "LP", "HP", "BP" };
-    const int fi = juce::jlimit (0, 2, (int) proc.apvts.getRawParameterValue ("ftype")->load());
-    if (typeBtn.getButtonText() != ft[fi]) typeBtn.setButtonText (ft[fi]);
-
     static const char* rt[4] = { "ROOM", "PLATE", "HALL", "CHURCH" };
     const int ri = juce::jlimit (0, 3, (int) proc.apvts.getRawParameterValue ("rtype")->load());
     if (spaceBtn.getButtonText() != rt[ri]) spaceBtn.setButtonText (rt[ri]);
 
     // bypassed effects look dimmed
-    const float aF = 0.4f + 0.6f * smooth01 (buttonLit (fonBtn));
     const float aD = 0.4f + 0.6f * smooth01 (buttonLit (donBtn));
     const float aR = 0.4f + 0.6f * smooth01 (buttonLit (ronBtn));
     const float aP = 0.4f + 0.6f * smooth01 (buttonLit (ponBtn));
     const float aC = 0.4f + 0.6f * smooth01 (buttonLit (conBtn));
-    for (size_t idx : { (size_t) 8, (size_t) 9, (size_t) 10, (size_t) 20 }) { knobs[idx].slider.setAlpha (aF); knobs[idx].label.setAlpha (aF); }
     for (size_t idx : { (size_t) 11, (size_t) 12, (size_t) 13 })            { knobs[idx].slider.setAlpha (aD); knobs[idx].label.setAlpha (aD); }
     for (size_t idx : { (size_t) 14, (size_t) 15, (size_t) 16 })            { knobs[idx].slider.setAlpha (aR); knobs[idx].label.setAlpha (aR); }
     for (size_t idx : { (size_t) 22, (size_t) 23, (size_t) 24, (size_t) 25, (size_t) 26 }) { knobs[idx].slider.setAlpha (aP); knobs[idx].label.setAlpha (aP); }
     for (size_t idx : { (size_t) 27, (size_t) 28, (size_t) 29 })            { knobs[idx].slider.setAlpha (aC); knobs[idx].label.setAlpha (aC); }
-    typeBtn.setAlpha (aF);
     spaceBtn.setAlpha (aR);
     if (tab == 1 && eqView != nullptr) eqView->update();
 
@@ -2144,7 +2124,7 @@ void ScattrPanel::paintStatic (juce::Graphics& g)
     else
     {
         drawGlass (g, eqPanel(), 12.f, 0.62f, true);
-        for (int k = 0; k < 5; ++k) drawGroup (g, fxPanel (k));
+        for (int k = 0; k < 4; ++k) drawGroup (g, fxPanel (k));
     }
 }
 
@@ -2197,7 +2177,7 @@ void ScattrPanel::paintGlints (juce::Graphics& g)
     int n = 0;
     cards[n++] = eqRect();
     if (tab == 0) { cards[n++] = waveRect(); cards[n++] = sampleRect(); cards[n++] = grainPanel(); cards[n++] = motionPanel(); }
-    else          { cards[n++] = eqPanel(); for (int k = 0; k < 5; ++k) cards[n++] = fxPanel (k); }
+    else          { cards[n++] = eqPanel(); for (int k = 0; k < 4; ++k) cards[n++] = fxPanel (k); }
 
     for (int i = 0; i < n; ++i)
     {
@@ -2234,11 +2214,10 @@ void ScattrPanel::paintLabels (juce::Graphics& g)
     else
     {
         drawGroupTitle (g, eqPanel(),  "clearing: equalizer");
-        drawGroupTitle (g, fxPanel (0), "canopy: filter");
-        drawGroupTitle (g, fxPanel (1), "ripple: phaser");
-        drawGroupTitle (g, fxPanel (2), "birdsong: chorus");
-        drawGroupTitle (g, fxPanel (3), "canyon: delay");
-        drawGroupTitle (g, fxPanel (4), "cavern: reverb");
+        drawGroupTitle (g, fxPanel (0), "ripple: phaser");
+        drawGroupTitle (g, fxPanel (1), "birdsong: chorus");
+        drawGroupTitle (g, fxPanel (2), "canyon: delay");
+        drawGroupTitle (g, fxPanel (3), "cavern: reverb");
     }
 }
 
@@ -2386,7 +2365,7 @@ void ScattrPanel::paintKnobGlows (juce::Graphics& g)
 // The wider glow behind an on/off button. It swells as the button switches (see drawKeyBody for the key itself).
 void ScattrPanel::paintToggleGlows (juce::Graphics& g)
 {
-    for (auto* b : { &droneBtn, &tuneBtn, &fonBtn, &donBtn, &ronBtn, &specBtn, &ponBtn, &conBtn })
+    for (auto* b : { &droneBtn, &tuneBtn, &donBtn, &ronBtn, &specBtn, &ponBtn, &conBtn })
     {
         if (! b->isVisible()) continue;
 
@@ -2414,9 +2393,9 @@ int ScattrPanel::hoveredControl() const
         if (knobs[i].slider.isVisible() && (knobs[i].slider.isMouseOver (true) || knobs[i].label.isMouseOver (false)))
             return (int) i;
 
-    const juce::Component* extra[7] = { &droneBtn, &tuneBtn, &typeBtn, &spaceBtn, &fonBtn, &donBtn, &ronBtn };
+    const juce::Component* extra[7] = { &droneBtn, &tuneBtn, nullptr, &spaceBtn, nullptr, &donBtn, &ronBtn };   // 32 and 34 were the filter
     for (int k = 0; k < 7; ++k)
-        if (extra[k]->isVisible() && extra[k]->isMouseOver (true))
+        if (extra[k] != nullptr && extra[k]->isVisible() && extra[k]->isMouseOver (true))
             return 30 + k;
 
     if (specBtn.isVisible() && specBtn.isMouseOver (true)) return 37;
@@ -2534,6 +2513,7 @@ EqDisplay::EqDisplay (ScattrPanel& pn, ScattrProcessor& pr) : panel (pn), proc (
         bp[(size_t) i].freq = proc.apvts.getParameter (id + "f");
         bp[(size_t) i].gain = proc.apvts.getParameter (id + "g");
         bp[(size_t) i].q    = proc.apvts.getParameter (id + "q");
+        bp[(size_t) i].slope = proc.apvts.getParameter (id + "sl");
     }
 
     addAndMakeVisible (preBtn);
@@ -2580,6 +2560,7 @@ EqCore::Band EqDisplay::readBand (int i) const
     r.freq   = b.freq->convertFrom0to1 (b.freq->getValue());
     r.gainDb = b.gain->convertFrom0to1 (b.gain->getValue());
     r.q      = b.q->convertFrom0to1 (b.q->getValue());
+    r.slope  = juce::jlimit (0, EqCore::numSlopes - 1, juce::roundToInt (b.slope->convertFrom0to1 (b.slope->getValue())));
     return r;
 }
 
@@ -2605,7 +2586,7 @@ int EqDisplay::hitBand (juce::Point<float> p) const
 
 juce::Colour EqDisplay::bandColour (int i)
 {
-    return juce::Colour::fromHSV (std::fmod (0.58f + 0.125f * (float) i, 1.f), 0.42f, 0.98f, 1.f);   // soft pastels around the wheel
+    return juce::Colour::fromHSV (std::fmod (0.58f + 0.381966f * (float) i, 1.f), 0.42f, 0.98f, 1.f);   // soft pastels, spread by the golden angle so neighbouring bands differ
 }
 
 void EqDisplay::setNorm (juce::RangedAudioParameter* p, float plainValue)
@@ -2642,6 +2623,7 @@ void EqDisplay::addBandAt (juce::Point<float> p)
         put (bp[(size_t) i].freq, hzOfX (p.x));
         put (bp[(size_t) i].gain, juce::jlimit (-kPlotDb, kPlotDb, dbOfY (p.y)));
         put (bp[(size_t) i].q, 1.f);
+        put (bp[(size_t) i].slope, 0.f);
         put (bp[(size_t) i].on, 1.f);
         selected = i;
         return;
@@ -2663,8 +2645,17 @@ void EqDisplay::removeBand (int i)
 void EqDisplay::showTypeMenu (int i)
 {
     juce::PopupMenu m;
-    const int cur = readBand (i).type;
-    for (int t = 0; t < EqCore::numTypes; ++t) m.addItem (t + 1, EqCore::typeName (t), true, t == cur);
+    const auto cur = readBand (i);
+    for (int t = 0; t < EqCore::numTypes; ++t) m.addItem (t + 1, EqCore::typeName (t), true, t == cur.type);
+
+    if (EqCore::isCut (cur.type))   // cuts can be made steeper
+    {
+        juce::PopupMenu sub;
+        for (int k = 0; k < EqCore::numSlopes; ++k) sub.addItem (20 + k, EqCore::slopeName (k), true, k == cur.slope);
+        m.addSeparator();
+        m.addSubMenu ("Slope", sub);
+    }
+
     m.addSeparator();
     m.addItem (100, "Remove band");
 
@@ -2673,10 +2664,49 @@ void EqDisplay::showTypeMenu (int i)
     {
         if (safe == nullptr || result <= 0) return;
         if (result == 100) { safe->removeBand (i); return; }
+
+        if (result >= 20 && result < 20 + EqCore::numSlopes)
+        {
+            auto* par = safe->bp[(size_t) i].slope;
+            par->beginChangeGesture();
+            safe->setNorm (par, (float) (result - 20));
+            par->endChangeGesture();
+            return;
+        }
+
+        const auto before = safe->readBand (i);
         auto* par = safe->bp[(size_t) i].type;
         par->beginChangeGesture();
         safe->setNorm (par, (float) (result - 1));
         par->endChangeGesture();
+
+        if (EqCore::isCut (result - 1) && ! EqCore::isCut (before.type))   // a fresh cut starts out flat (no resonant bump)
+        {
+            auto* q = safe->bp[(size_t) i].q;
+            q->beginChangeGesture();
+            safe->setNorm (q, 0.71f);
+            q->endChangeGesture();
+        }
+    });
+}
+
+void EqDisplay::showPlotMenu (juce::Point<float> p)
+{
+    int used = 0;
+    for (int i = 0; i < EqCore::numBands; ++i) if (readBand (i).on) ++used;
+
+    juce::PopupMenu m;
+    m.addItem (1, "Add band here", used < EqCore::numBands);
+    m.addItem (2, "Clear all bands", used > 0);
+
+    juce::Component::SafePointer<EqDisplay> safe (this);
+    m.showMenuAsync (juce::PopupMenu::Options(), [safe, p] (int result)
+    {
+        if (safe == nullptr || result <= 0) return;
+        if (result == 1) safe->addBandAt (p);
+        else
+            for (int i = 0; i < EqCore::numBands; ++i)
+                if (safe->readBand (i).on) safe->removeBand (i);
     });
 }
 
@@ -2698,6 +2728,7 @@ void EqDisplay::mouseDown (const juce::MouseEvent& e)
     if (e.mods.isPopupMenu())
     {
         if (hit >= 0) { selected = hit; showTypeMenu (hit); }
+        else if (plot().expanded (6.f).contains (e.position)) showPlotMenu (e.position);
         return;
     }
     if (hit < 0) { selected = -1; return; }
@@ -2883,34 +2914,9 @@ void EqDisplay::paint (juce::Graphics& g)
         g.strokePath (line, juce::PathStrokeType (1.2f));
     }
 
-    // ---------- the filter's own response (dashed), so the plot shows everything shaping the tone
-    if (proc.apvts.getRawParameterValue ("fon")->load() > 0.5f)
-    {
-        const float fc = juce::jmax (20.f, proc.apvts.getRawParameterValue ("cutoff")->load());
-        const float q = juce::jmax (0.3f, proc.apvts.getRawParameterValue ("reso")->load());
-        const float mix = proc.apvts.getRawParameterValue ("fmix")->load();
-        const int type = juce::jlimit (0, 2, (int) proc.apvts.getRawParameterValue ("ftype")->load());
-
-        juce::Path fp;
-        for (int i = 0; i <= (int) pl.getWidth(); i += 3)
-        {
-            const float x = hzOfX (pl.getX() + (float) i) / fc;
-            const float den = std::sqrt ((1.f - x * x) * (1.f - x * x) + (x / q) * (x / q)) + 1.0e-6f;
-            float mag = type == 0 ? 1.f / den : type == 1 ? x * x / den : (x / q) / den;
-            mag = (1.f - mix) + mix * mag;
-            const float db = juce::jlimit (-40.f, 24.f, 20.f * std::log10 (mag + 1.0e-6f));
-            if (i == 0) fp.startNewSubPath (pl.getX(), yOfDb (db)); else fp.lineTo (pl.getX() + (float) i, yOfDb (db));
-        }
-        juce::Path dashed;
-        const float dashes[] = { 5.f, 4.f };
-        juce::PathStrokeType (1.4f).createDashedStroke (dashed, fp, dashes, 2);
-        g.setColour (pal.grass.withAlpha (0.85f));
-        g.fillPath (dashed);
-    }
-
     // ---------- the equalizer curve, from the same filter maths the audio uses
     std::array<EqCore::Band, EqCore::numBands> bands;
-    std::array<EqCore::Coeffs, EqCore::numBands> cf;
+    std::array<EqCore::Sections, EqCore::numBands> cf;
     bool any = false;
     for (int i = 0; i < EqCore::numBands; ++i)
     {
@@ -2918,7 +2924,7 @@ void EqDisplay::paint (juce::Graphics& g)
         if (bands[(size_t) i].on)
         {
             const auto& b = bands[(size_t) i];
-            cf[(size_t) i] = EqCore::design (b.type, b.freq, b.gainDb, b.q, sr);
+            cf[(size_t) i] = EqCore::designBand (b, sr);
             any = true;
         }
     }
@@ -2934,14 +2940,14 @@ void EqDisplay::paint (juce::Graphics& g)
             const float x = pl.getX() + (float) i, hz = hzOfX (x);
             double db = 0.0;
             for (int b = 0; b < EqCore::numBands; ++b)
-                if (bands[(size_t) b].on) db += EqCore::magDb (cf[(size_t) b], hz, sr);
+                if (bands[(size_t) b].on) db += EqCore::sectionsDb (cf[(size_t) b], hz, sr);
             const float y = yOfDb (juce::jlimit (-kPlotDb * 1.2f, kPlotDb * 1.2f, (float) db));
             if (i == 0) { curve.startNewSubPath (x, y); area.startNewSubPath (x, y0); area.lineTo (x, y); }
             else        { curve.lineTo (x, y); area.lineTo (x, y); }
 
             if (focus >= 0 && bands[(size_t) focus].on)
             {
-                const float yb = yOfDb ((float) EqCore::magDb (cf[(size_t) focus], hz, sr));
+                const float yb = yOfDb ((float) EqCore::sectionsDb (cf[(size_t) focus], hz, sr));
                 if (i == 0) one.startNewSubPath (x, yb); else one.lineTo (x, yb);
             }
         }
@@ -2973,7 +2979,7 @@ void EqDisplay::paint (juce::Graphics& g)
     {
         g.setColour (pal.dim.withAlpha (0.55f));
         g.setFont (serif (14.f, true));
-        g.drawText ("double-click to add a band", pl.withTrimmedBottom (pl.getHeight() * 0.18f), juce::Justification::centred);
+        g.drawText ("double-click to add a band  -  up to 24", pl.withTrimmedBottom (pl.getHeight() * 0.18f), juce::Justification::centred);
     }
 
     // ---------- band nodes
@@ -2995,7 +3001,7 @@ void EqDisplay::paint (juce::Graphics& g)
         g.setColour (juce::Colours::white.withAlpha (hot ? 0.95f : 0.7f));
         g.drawEllipse (n.x - r, n.y - r, r * 2.f, r * 2.f, 1.3f);
         g.setColour (pal.soil.darker (0.4f));
-        g.setFont (serif (11.f, true));
+        g.setFont (serif (i >= 9 ? 9.5f : 11.f, true));
         g.drawText (juce::String (i + 1), juce::Rectangle<float> (n.x - r, n.y - r, r * 2.f, r * 2.f), juce::Justification::centred);
     }
 
@@ -3006,7 +3012,10 @@ void EqDisplay::paint (juce::Graphics& g)
         const auto& b = bands[(size_t) info];
         const auto n = nodePos (info);
         juce::String l1 = juce::String (EqCore::typeName (b.type)) + "   " + hzText (b.freq);
-        juce::String l2 = (EqCore::usesGain (b.type) ? (b.gainDb >= 0.f ? "+" : "") + juce::String (b.gainDb, 1) + " dB   " : juce::String()) + "Q " + juce::String (b.q, 2);
+        juce::String l2 = (EqCore::usesGain (b.type) ? (b.gainDb >= 0.f ? "+" : "") + juce::String (b.gainDb, 1) + " dB   " : juce::String())
+                        + (EqCore::usesQ (b.type) ? "Q " + juce::String (b.q, 2) : juce::String())
+                        + (EqCore::isCut (b.type) ? juce::String ("   ") + EqCore::slopeName (b.slope) : juce::String());
+        l2 = l2.trim();
 
         g.setFont (serif (12.f));
         auto textW = [&] (const juce::String& t)

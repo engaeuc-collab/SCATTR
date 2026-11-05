@@ -34,17 +34,11 @@ juce::AudioProcessorValueTreeState::ParameterLayout makeLayout()
     add ("mtune", "Master Tune", -100.f, 100.f, 0.f, 1.f);   // cents
 
     // effects
-    add ("cutoff", "Filter Cutoff", 20.f, 20000.f, 20000.f, 0.3f);
-    add ("reso",   "Filter Reso",   0.5f, 12.f,    0.7f,    0.5f);
-    add ("drive",  "Drive",         0.f,  1.f,     0.f,     1.f);
-    add ("fmix",   "Filter Mix",    0.f,  1.f,     1.f,     1.f);
     add ("dfb",    "Delay Feedback",0.f,  0.95f,   0.35f,   1.f);
     add ("dmix",   "Delay Mix",     0.f,  1.f,     0.15f,   1.f);
     add ("rsize",  "Reverb Size",   0.f,  1.f,     0.6f,    1.f);
     add ("rdamp",  "Reverb Damp",   0.f,  1.f,     0.5f,    1.f);
     add ("rmix",   "Reverb Mix",    0.f,  1.f,     0.25f,   1.f);
-    p.push_back (std::make_unique<juce::AudioParameterChoice> (
-        juce::ParameterID { "ftype", 1 }, "Filter Type", juce::StringArray { "LP", "HP", "BP" }, 0));
 
     p.push_back (std::make_unique<juce::AudioParameterChoice> (
         juce::ParameterID { "dnote", 1 }, "Delay Time",
@@ -55,7 +49,6 @@ juce::AudioProcessorValueTreeState::ParameterLayout makeLayout()
         juce::StringArray { "Room", "Plate", "Hall", "Cathedral" }, 2));
 
     // every effect starts bypassed
-    p.push_back (std::make_unique<juce::AudioParameterBool> (juce::ParameterID { "fon", 1 }, "Filter On", false));
     p.push_back (std::make_unique<juce::AudioParameterBool> (juce::ParameterID { "don", 1 }, "Delay On",  false));
     p.push_back (std::make_unique<juce::AudioParameterBool> (juce::ParameterID { "ron", 1 }, "Reverb On", false));
 
@@ -77,11 +70,11 @@ juce::AudioProcessorValueTreeState::ParameterLayout makeLayout()
     add ("cdepth",  "Chorus Depth",      0.f,   1.f,    0.35f, 1.f);
     add ("cmix",    "Chorus Mix",        0.f,   1.f,    0.5f,  1.f);
 
-    // equalizer: eight bands, all off until the user adds them
+    // equalizer: 24 bands, all off until the user adds them
     {
-        static const float defFreq[EqCore::numBands] = { 40.f, 120.f, 350.f, 1000.f, 2500.f, 6000.f, 10000.f, 16000.f };
-        juce::StringArray typeNames;
+        juce::StringArray typeNames, slopeNames;
         for (int t = 0; t < EqCore::numTypes; ++t) typeNames.add (EqCore::typeName (t));
+        for (int t = 0; t < EqCore::numSlopes; ++t) slopeNames.add (EqCore::slopeName (t));
 
         for (int i = 0; i < EqCore::numBands; ++i)
         {
@@ -90,12 +83,14 @@ juce::AudioProcessorValueTreeState::ParameterLayout makeLayout()
             p.push_back (std::make_unique<juce::AudioParameterChoice> (juce::ParameterID { id + "ty", 1 }, "EQ " + n + " Type", typeNames, 0));
             NR fr (EqCore::minHz, EqCore::maxHz);
             fr.setSkewForCentre (1000.f);
-            p.push_back (std::make_unique<juce::AudioParameterFloat> (juce::ParameterID { id + "f", 1 }, "EQ " + n + " Freq", fr, defFreq[i]));
+            const float defFreq = EqCore::minHz * std::pow (EqCore::maxHz / EqCore::minHz, ((float) i + 0.5f) / (float) EqCore::numBands);   // spread across the spectrum
+            p.push_back (std::make_unique<juce::AudioParameterFloat> (juce::ParameterID { id + "f", 1 }, "EQ " + n + " Freq", fr, defFreq));
             p.push_back (std::make_unique<juce::AudioParameterFloat> (juce::ParameterID { id + "g", 1 }, "EQ " + n + " Gain",
                                                                       NR (-EqCore::maxGainDb, EqCore::maxGainDb), 0.f));
             NR qr (0.1f, 18.f);
             qr.setSkewForCentre (1.f);
             p.push_back (std::make_unique<juce::AudioParameterFloat> (juce::ParameterID { id + "q", 1 }, "EQ " + n + " Q", qr, 1.f));
+            p.push_back (std::make_unique<juce::AudioParameterChoice> (juce::ParameterID { id + "sl", 1 }, "EQ " + n + " Slope", slopeNames, 0));
         }
     }
 
@@ -226,8 +221,8 @@ ScattrProcessor::ScattrProcessor()
     for (auto& s : eqPostBuf) s.store (0.f, std::memory_order_relaxed);
     for (int i = 0; i < EqCore::numBands; ++i)
     {
-        static const char* suffix[5] = { "on", "ty", "f", "g", "q" };
-        for (int k = 0; k < 5; ++k)
+        static const char* suffix[6] = { "on", "ty", "f", "g", "q", "sl" };
+        for (int k = 0; k < 6; ++k)
             eqParam[i][k] = apvts.getRawParameterValue ("eq" + juce::String (i) + suffix[k]);
     }
     for (int i = 0; i <= 1024; ++i)
@@ -280,8 +275,6 @@ void ScattrProcessor::prepareToPlay (double sampleRate, int samplesPerBlock)
 {
     currentSr = sampleRate;
 
-    filter.prepare ({ sampleRate, (juce::uint32) juce::jmax (1, samplesPerBlock), 2 });
-    filter.reset();
     reverb.setSampleRate (sampleRate);
     reverb.reset();
 
@@ -292,7 +285,7 @@ void ScattrProcessor::prepareToPlay (double sampleRate, int samplesPerBlock)
     delayTimeSm.reset (sampleRate, 0.08);
     delayTimeSm.setCurrentAndTargetValue ((float) (0.35 * sampleRate));
 
-    for (auto* sm : { &fOnSm, &dOnSm, &rOnSm })
+    for (auto* sm : { &dOnSm, &rOnSm })
     {
         sm->reset (sampleRate, 0.02);
         sm->setCurrentAndTargetValue (0.f);
@@ -307,8 +300,6 @@ void ScattrProcessor::prepareToPlay (double sampleRate, int samplesPerBlock)
     texIdx = texNext = -1;
     texPos = 0.0;
     texLevel = 0.f;
-    cutoffSm.reset (sampleRate, 0.03);
-    cutoffSm.setCurrentAndTargetValue (20000.f);
 
     {
         const juce::dsp::ProcessSpec ps { sampleRate, (juce::uint32) juce::jmax (1, samplesPerBlock), 2 };
@@ -489,12 +480,9 @@ void ScattrProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::Midi
     const float targetNote = notesHeld > 0 ? (float) heldNote : 60.f;   // C4 when drifting with no key held
 
     // effect settings
-    const float cutoff = prm ("cutoff"), reso = prm ("reso"), drive = prm ("drive"), fMix = prm ("fmix"),
-                dFb = prm ("dfb"), dMix = prm ("dmix"),
+    const float dFb = prm ("dfb"), dMix = prm ("dmix"),
                 rSize = prm ("rsize"), rDamp = prm ("rdamp"), rMix = prm ("rmix");
-    const int fType = juce::jlimit (0, 2, (int) prm ("ftype"));
-    const bool fOn = prm ("fon") > 0.5f, dOn = prm ("don") > 0.5f, rOn = prm ("ron") > 0.5f;
-    fOnSm.setTargetValue (fOn ? 1.f : 0.f);
+    const bool dOn = prm ("don") > 0.5f, rOn = prm ("ron") > 0.5f;
     dOnSm.setTargetValue (dOn ? 1.f : 0.f);
     rOnSm.setTargetValue (rOn ? 1.f : 0.f);
 
@@ -513,14 +501,7 @@ void ScattrProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::Midi
     const int dIdx = juce::jlimit (0, 10, (int) prm ("dnote"));
     const float delaySamples = juce::jlimit (16.f, (float) (delaySize - 8), (float) (noteBeats[dIdx] * 60.0 / bpm * sr));
     const float texCoef = 1.f - std::exp (-1.f / (0.25f * (float) sr));   // ~250 ms texture fades
-    filter.setType (fType == 0 ? juce::dsp::StateVariableTPTFilterType::lowpass
-                  : fType == 1 ? juce::dsp::StateVariableTPTFilterType::highpass
-                               : juce::dsp::StateVariableTPTFilterType::bandpass);
-    filter.setResonance (reso);
-    cutoffSm.setTargetValue (juce::jlimit (20.f, (float) (0.45 * sr), cutoff));
     delayTimeSm.setTargetValue (delaySamples);
-    const float drv = 1.f + drive * 12.f;
-    const float driveMakeup = 0.5f / std::tanh (drv * 0.5f);
 
     float* L = buffer.getWritePointer (0);
     float* R = buffer.getNumChannels() > 1 ? buffer.getWritePointer (1) : nullptr;
@@ -730,27 +711,6 @@ void ScattrProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::Midi
 
         if (R == nullptr) yL = yR = 0.5f * (yL + yR);
 
-        // filter (+ drive), faded in/out by its on button and blended by the filter mix
-        const float cf = cutoffSm.getNextValue();
-        const float fw = fOnSm.getNextValue();
-        if (fw > 0.0005f)
-        {
-            const float dryL = yL, dryR = yR;
-            if ((n & 7) == 0) filter.setCutoffFrequency (cf);
-            yL = filter.processSample (0, yL);
-            yR = filter.processSample (1, yR);
-
-            if (drive > 0.001f)
-            {
-                yL = std::tanh (yL * drv) * driveMakeup;
-                yR = std::tanh (yR * drv) * driveMakeup;
-            }
-
-            const float m = fMix * fw;
-            yL = dryL + (yL - dryL) * m;
-            yR = dryR + (yR - dryR) * m;
-        }
-
         // ping-pong delay
         const float dw = dOnSm.getNextValue();
         float readPos = (float) delayW - delayTimeSm.getNextValue();
@@ -877,6 +837,7 @@ void ScattrProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::Midi
             b.freq   = eqParam[i][2]->load();
             b.gainDb = eqParam[i][3]->load();
             b.q      = eqParam[i][4]->load();
+            b.slope  = juce::jlimit (0, EqCore::numSlopes - 1, (int) eqParam[i][5]->load());
         }
         eq.setBands (bands);
 
