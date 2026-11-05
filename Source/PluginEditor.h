@@ -104,6 +104,19 @@ namespace Scat
         return juce::Font (juce::FontOptions().withName (name).withStyle ("Light").withHeight (h).withKerningFactor (0.14f));
     }
 
+    // The logo face: a heavy, bookish serif for the lowercase "nature" wordmark (first one installed wins).
+    inline juce::Font logoFont (float h)
+    {
+        static const juce::String name = []
+        {
+            const auto all = juce::Font::findAllTypefaceNames();
+            for (auto* c : { "Georgia", "Palatino Linotype", "Book Antiqua", "Cambria", "Palatino", "Times New Roman" })
+                if (all.contains (c)) return juce::String (c);
+            return juce::Font::getDefaultSerifFontName();
+        }();
+        return juce::Font (juce::FontOptions().withName (name).withStyle ("Bold").withHeight (h).withKerningFactor (0.01f));
+    }
+
     // Space kept around a rotary knob inside its slider bounds (the arc glow has to fit in it)
     inline constexpr float knobPad = 9.f;
 
@@ -161,6 +174,7 @@ public:
     void mouseMove (const juce::MouseEvent&) override;
     void mouseDoubleClick (const juce::MouseEvent&) override;
     void mouseWheelMove (const juce::MouseEvent&, const juce::MouseWheelDetails&) override;
+    bool keyPressed (const juce::KeyPress&) override;   // Ctrl+Z / Ctrl+Y undo and redo for the equalizer (FX tab)
 
     bool isInterestedInFileDrag (const juce::StringArray&) override;
     void filesDropped (const juce::StringArray& files, int, int) override;
@@ -328,6 +342,9 @@ public:
 
     juce::ToggleButton preBtn { "PRE" };   // also draw the spectrum going INTO the equalizer
 
+    bool undo();   // step back through band edits (Ctrl+Z); false when there is nothing to undo
+    bool redo();   // and forward again (Ctrl+Y / Ctrl+Shift+Z)
+
 private:
     struct BandP { juce::RangedAudioParameter *on = nullptr, *type = nullptr, *freq = nullptr, *gain = nullptr, *q = nullptr, *slope = nullptr; };
 
@@ -346,6 +363,27 @@ private:
     void removeBand (int i);
     void showTypeMenu (int i);
     void showPlotMenu (juce::Point<float> p);
+
+    // undo history: a snapshot of all 24 bands is taken before each edit and pushed if the edit changed anything
+    struct Snap
+    {
+        std::array<EqCore::Band, EqCore::numBands> b;
+        bool operator== (const Snap& o) const { return b == o.b; }
+    };
+    Snap snapshot() const;
+    void applySnapshot (const Snap&);
+    void record (const Snap& before);   // push `before` as an undo step if the bands are no longer the same
+    struct Scope   // records one undo step covering everything done while it is alive
+    {
+        explicit Scope (EqDisplay& e) : d (e), before (e.snapshot()) {}
+        ~Scope() { d.record (before); }
+        EqDisplay& d;
+        Snap before;
+    };
+    std::vector<Snap> undoStack, redoStack;
+    Snap dragBefore;
+    int lastWheelBand = -1;
+    double lastWheelMs = 0.0;
     static juce::Colour bandColour (int i);
     void computeSpectrum (const std::atomic<float>* ring, std::vector<float>& out, std::vector<float>& smoothed, bool stale);
 

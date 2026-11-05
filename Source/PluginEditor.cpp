@@ -125,17 +125,36 @@ inline float smooth01 (float t)
     return t * t * (3.f - 2.f * t);
 }
 
-// Width of the "Nature" title at its drawn size, so the title and the sprout beside it can be centred as one group.
-float titleWidth()
+// The "nature" wordmark: each letter is drawn on its own (so it can breathe), so the layout of the letters is worked out once.
+constexpr float kLogoSize = 56.f, kLogoBase = 54.f;   // font height, and the baseline's y in the header
+struct LogoLayout { float x[6] {}, w[6] {}, total = 0.f; };
+const LogoLayout& logoLayout()
 {
-    static const float w = []
+    static const LogoLayout L = []
     {
+        LogoLayout r;
         juce::GlyphArrangement ga;
-        ga.addLineOfText (Scat::titleFont (50.f), "Nature", 0.f, 0.f);
-        return ga.getBoundingBox (0, -1, true).getWidth();
+        ga.addLineOfText (Scat::logoFont (kLogoSize), "nature", 0.f, 0.f);
+        const int n = juce::jmin (6, ga.getNumGlyphs());
+        for (int i = 0; i < n; ++i)
+        {
+            r.x[i] = ga.getGlyph (i).getLeft();
+            r.w[i] = ga.getGlyph (i).getRight() - ga.getGlyph (i).getLeft();
+        }
+        r.total = ga.getBoundingBox (0, -1, true).getWidth();
+        return r;
     }();
-    return w;
+    return L;
 }
+
+// top of a box (height H) in which a left-aligned, vertically centred line of `f` has its baseline at baseY
+float logoBoxTop (const juce::Font& f, float baseY, float H)
+{
+    return baseY - ((H - (f.getAscent() + f.getDescent())) * 0.5f + f.getAscent());
+}
+
+// Width of the title at its drawn size, so the title and the sprout beside it can be centred as one group.
+float titleWidth() { return logoLayout().total; }
 constexpr float sproutGap = 24.f, sproutHalf = 15.f;   // title -> sprout stem, and how far the sprout reaches right of its stem
 
 // How "on" a toggle looks, 0..1. The panel glides this for the on/off buttons (the "lit" property, 0.2 s);
@@ -192,7 +211,7 @@ const Tip kTips[42] = {
     { "spectral gate", "Opens the spectral gate, which keeps or removes each frequency depending on whether it is above or below a cutoff. Lit while on. Right-click to switch it on or off." },
     { "phaser",        "Turns the phaser on or off." },
     { "chorus",        "Turns the chorus on or off." },
-    { "equalizer",     "Double-click to add a band (up to 24), drag a dot to move it, scroll over it to change its width, right-click it for its shape and slope." },
+    { "equalizer",     "Double-click to add a band (up to 24), drag a dot to move it, scroll over it to change its width, right-click it for its shape and slope. Ctrl+Z undoes." },
     { "pre",           "Also shows the sound going into the equalizer, as a thin line behind the filled spectrum." }
 };
 
@@ -725,6 +744,7 @@ void ScattrLNF::drawToggleButton (juce::Graphics& g, juce::ToggleButton& b, bool
 ScattrPanel::ScattrPanel (ScattrProcessor& p) : proc (p)
 {
     setLookAndFeel (&lnf);
+    setWantsKeyboardFocus (true);   // so Ctrl+Z reaches the equalizer's undo
     setSize (baseW, baseH);
 
     struct Def { const char* id; const char* text; int dp; };
@@ -1049,6 +1069,19 @@ float ScattrPanel::sproutX() const { return titleX() + titleWidth() + sproutGap;
 bool ScattrPanel::isInterestedInFileDrag (const juce::StringArray&)
 {
     return spectral == nullptr || ! spectral->isVisible();   // nothing behind the spectral window may be dropped on
+}
+
+bool ScattrPanel::keyPressed (const juce::KeyPress& k)
+{
+    if (tab != 1 || eqView == nullptr || (spectral != nullptr && spectral->isVisible())) return false;
+
+    const auto m = k.getModifiers();
+    if (! m.isCommandDown()) return false;   // Ctrl on Windows / Linux, Cmd on a Mac
+
+    const auto c = juce::CharacterFunctions::toLowerCase ((juce::juce_wchar) k.getKeyCode());
+    if (c == 'z') return m.isShiftDown() ? eqView->redo() : eqView->undo();
+    if (c == 'y') return eqView->redo();
+    return false;
 }
 
 void ScattrPanel::openSpectral()
@@ -1741,16 +1774,18 @@ void ScattrPanel::paintAtmosphere (juce::Graphics& g)
 void ScattrPanel::paintTitleGlow (juce::Graphics& g)
 {
     const float twoPi = juce::MathConstants<float>::twoPi;
-    g.setFont (titleFont (50.f));
+    const auto f = logoFont (kLogoSize);
+    g.setFont (f);
+    const float top = logoBoxTop (f, kLogoBase, 80.f);
     for (int layer = 0; layer < 3; ++layer)
     {
         const float rr = 6.f - 2.f * (float) layer;   // 6, 4, 2 px
-        g.setColour (pal.glow.withAlpha (0.03f + 0.02f * (float) layer));
+        g.setColour (pal.glow.withAlpha (0.02f + 0.012f * (float) layer));
         for (int k = 0; k < 12; ++k)
         {
             const float ang = (float) k * twoPi / 12.f;
-            g.drawText ("Nature", juce::roundToInt (titleX() + std::cos (ang) * rr), juce::roundToInt (14.f + std::sin (ang) * rr),
-                        300, 50, juce::Justification::centredLeft);
+            g.drawText ("nature", juce::Rectangle<float> (titleX() + std::cos (ang) * rr, top + std::sin (ang) * rr, 300.f, 80.f),
+                        juce::Justification::centredLeft, false);
         }
     }
 }
@@ -2199,12 +2234,68 @@ void ScattrPanel::paintGlints (juce::Graphics& g)
 
 void ScattrPanel::paintLabels (juce::Graphics& g)
 {
-    // title: soft shadow, then letters that warm from ivory to the highlight colour (the glow is in the cache)
-    g.setFont (titleFont (50.f));
-    g.setColour (juce::Colours::black.withAlpha (0.45f));
-    g.drawText ("Nature", juce::roundToInt (titleX() + 1.f), 16, 300, 50, juce::Justification::centredLeft);
-    g.setGradientFill (juce::ColourGradient (pal.ink, 0.f, 18.f, pal.ink.interpolatedWith (pal.amber, 0.55f), 0.f, 60.f, false));
-    g.drawText ("Nature", juce::roundToInt (titleX()), 14, 300, 50, juce::Justification::centredLeft);
+    // The wordmark: silver letters that breathe (each one drifts a hair up and down, a beat behind its neighbour),
+    // with a little sun that now and then rises behind the word, crosses it, and sets, warming each letter it passes.
+    {
+        const auto& lay = logoLayout();
+        const auto font = logoFont (kLogoSize);
+        const float x0 = titleX(), pi = juce::MathConstants<float>::pi, boxH = 80.f;
+        const float top = logoBoxTop (font, kLogoBase, boxH);
+        static const char* word = "nature";
+
+        // where the sun is: one slow pass of 8 s, then 8 s of rest
+        const float ph = std::fmod (anim / 16.f, 1.f);
+        float sunA = 0.f, sunX = 0.f, sunY = 0.f;
+        if (ph < 0.5f)
+        {
+            const float t = ph / 0.5f;
+            sunA = smooth01 (juce::jmin (1.f, std::sin (t * pi) * 1.8f));   // fades in and out at the ends
+            sunX = x0 - 26.f + t * (lay.total + 52.f);
+            sunY = kLogoBase - 30.f - 7.f * std::sin (t * pi);              // rises a little as it crosses
+        }
+
+        auto sunBloom = [&] (float radius, juce::Colour c, float alpha)
+        {
+            g.setGradientFill (juce::ColourGradient (c.withAlpha (alpha), sunX, sunY, c.withAlpha (0.f), sunX + radius, sunY, true));
+            g.fillEllipse (sunX - radius, sunY - radius, radius * 2.f, radius * 2.f);
+        };
+
+        if (sunA > 0.005f)   // the light behind the letters
+        {
+            sunBloom (78.f, juce::Colour (0xffff9a2e), 0.20f * sunA);
+            sunBloom (44.f, juce::Colour (0xffffb340), 0.42f * sunA);
+            sunBloom (19.f, juce::Colour (0xffffd57a), 0.90f * sunA);
+        }
+
+        const auto silver = pal.ink.withSaturation (0.07f);
+        const auto warmTop = juce::Colour (0xfffff0c8), warmBot = juce::Colour (0xffe9953a);
+        g.setFont (font);
+
+        for (int i = 0; i < 6; ++i)
+        {
+            const float bob = 1.9f * std::sin (anim * 1.4f - (float) i * 0.5f);   // the breathing
+            const float cx = x0 + lay.x[i] + lay.w[i] * 0.5f;
+            const float dx = cx - sunX;
+            const float lit = sunA * std::exp (-(dx * dx) / (2.f * 40.f * 40.f));
+
+            const auto r = juce::Rectangle<float> (x0 + lay.x[i], top + bob, lay.w[i] + 24.f, boxH);
+            const juce::String ch = juce::String::charToString ((juce::juce_wchar) word[i]);
+
+            g.setColour (juce::Colours::black.withAlpha (0.45f));
+            g.drawText (ch, r.translated (1.f, 2.f), juce::Justification::centredLeft, false);
+
+            const auto tc = silver.brighter (0.2f).interpolatedWith (warmTop, lit * 0.9f);
+            const auto bc = silver.darker (0.5f).interpolatedWith (warmBot, lit * 0.7f);
+            g.setGradientFill (juce::ColourGradient (tc, 0.f, kLogoBase - 40.f + bob, bc, 0.f, kLogoBase + 2.f + bob, false));
+            g.drawText (ch, r, juce::Justification::centredLeft, false);
+        }
+
+        if (sunA > 0.005f)   // and a touch of its light spilling over the tops of the letters
+        {
+            sunBloom (34.f, juce::Colour (0xffffe3a0), 0.26f * sunA);
+            sunBloom (12.f, juce::Colour (0xfffff4d0), 0.40f * sunA);
+        }
+    }
 
     if (tab == 0)
     {
@@ -2609,6 +2700,7 @@ void EqDisplay::endGesture()
 
 void EqDisplay::addBandAt (juce::Point<float> p)
 {
+    Scope undoScope (*this);
     for (int i = 0; i < EqCore::numBands; ++i)
     {
         if (readBand (i).on) continue;
@@ -2663,6 +2755,7 @@ void EqDisplay::showTypeMenu (int i)
     m.showMenuAsync (juce::PopupMenu::Options(), [safe, i] (int result)
     {
         if (safe == nullptr || result <= 0) return;
+        Scope undoScope (*safe);   // everything below is one undo step
         if (result == 100) { safe->removeBand (i); return; }
 
         if (result >= 20 && result < 20 + EqCore::numSlopes)
@@ -2698,16 +2791,86 @@ void EqDisplay::showPlotMenu (juce::Point<float> p)
     juce::PopupMenu m;
     m.addItem (1, "Add band here", used < EqCore::numBands);
     m.addItem (2, "Clear all bands", used > 0);
+    m.addSeparator();
+    m.addItem (3, "Undo", ! undoStack.empty());
+    m.addItem (4, "Redo", ! redoStack.empty());
 
     juce::Component::SafePointer<EqDisplay> safe (this);
     m.showMenuAsync (juce::PopupMenu::Options(), [safe, p] (int result)
     {
         if (safe == nullptr || result <= 0) return;
         if (result == 1) safe->addBandAt (p);
-        else
+        else if (result == 3) safe->undo();
+        else if (result == 4) safe->redo();
+        else if (result == 2)
+        {
+            Scope undoScope (*safe);
             for (int i = 0; i < EqCore::numBands; ++i)
                 if (safe->readBand (i).on) safe->removeBand (i);
+        }
     });
+}
+
+// ---- undo / redo
+
+EqDisplay::Snap EqDisplay::snapshot() const
+{
+    Snap s;
+    for (int i = 0; i < EqCore::numBands; ++i) s.b[(size_t) i] = readBand (i);
+    return s;
+}
+
+void EqDisplay::record (const Snap& before)
+{
+    if (before == snapshot()) return;   // nothing actually changed
+    undoStack.push_back (before);
+    if (undoStack.size() > 200) undoStack.erase (undoStack.begin());
+    redoStack.clear();
+}
+
+void EqDisplay::applySnapshot (const Snap& s)
+{
+    auto put = [] (juce::RangedAudioParameter* par, float v)
+    {
+        par->beginChangeGesture();
+        par->setValueNotifyingHost (par->convertTo0to1 (v));
+        par->endChangeGesture();
+    };
+
+    for (int i = 0; i < EqCore::numBands; ++i)
+    {
+        const auto& b = s.b[(size_t) i];
+        if (readBand (i) == b) continue;
+        auto& p = bp[(size_t) i];
+        put (p.type, (float) b.type);
+        put (p.freq, b.freq);
+        put (p.gain, b.gainDb);
+        put (p.q, b.q);
+        put (p.slope, (float) b.slope);
+        put (p.on, b.on ? 1.f : 0.f);
+    }
+    selected = hover = -1;
+    dragging = false;
+}
+
+bool EqDisplay::undo()
+{
+    if (undoStack.empty() || dragging) return false;
+    redoStack.push_back (snapshot());
+    const auto s = undoStack.back();
+    undoStack.pop_back();
+    applySnapshot (s);
+    return true;
+}
+
+bool EqDisplay::redo()
+{
+    if (redoStack.empty() || dragging) return false;
+    undoStack.push_back (snapshot());
+    const auto s = redoStack.back();
+    redoStack.pop_back();
+    applySnapshot (s);
+    return true;
 }
 
 void EqDisplay::mouseMove (const juce::MouseEvent& e)
@@ -2724,6 +2887,7 @@ void EqDisplay::mouseExit (const juce::MouseEvent&)
 
 void EqDisplay::mouseDown (const juce::MouseEvent& e)
 {
+    panel.grabKeyboardFocus();   // so Ctrl+Z works right after clicking here
     const int hit = hitBand (e.position);
     if (e.mods.isPopupMenu())
     {
@@ -2735,6 +2899,7 @@ void EqDisplay::mouseDown (const juce::MouseEvent& e)
 
     selected = hit;
     dragging = true;
+    dragBefore = snapshot();
     beginGesture (hit);
 }
 
@@ -2750,14 +2915,14 @@ void EqDisplay::mouseDrag (const juce::MouseEvent& e)
 
 void EqDisplay::mouseUp (const juce::MouseEvent&)
 {
-    if (dragging) endGesture();
+    if (dragging) { endGesture(); record (dragBefore); }
     dragging = false;
 }
 
 void EqDisplay::mouseDoubleClick (const juce::MouseEvent& e)
 {
     const int hit = hitBand (e.position);
-    if (hit >= 0) removeBand (hit);
+    if (hit >= 0) { Scope undoScope (*this); removeBand (hit); }
     else if (plot().expanded (6.f).contains (e.position)) addBandAt (e.position);
 }
 
@@ -2766,12 +2931,18 @@ void EqDisplay::mouseWheelMove (const juce::MouseEvent& e, const juce::MouseWhee
     const int b = dragging ? selected : hitBand (e.position);
     if (b < 0) { Component::mouseWheelMove (e, w); return; }
 
+    const auto before = snapshot();
     auto* par = bp[(size_t) b].q;
     const float q = juce::jlimit (0.1f, 18.f, readBand (b).q * std::exp (w.deltaY * 2.5f));   // scroll up = narrower
     par->beginChangeGesture();
     setNorm (par, q);
     par->endChangeGesture();
     selected = b;
+
+    const double now = juce::Time::getMillisecondCounterHiRes();   // a burst of scrolling on one band is a single undo step
+    if (b != lastWheelBand || now - lastWheelMs > 600.0) record (before);
+    lastWheelBand = b;
+    lastWheelMs = now;
 }
 
 // ---- the spectrum
