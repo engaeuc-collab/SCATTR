@@ -456,7 +456,10 @@ public:
 
 private:
     void timerCallback() override;
-    void buildLayers();                     // renders the backdrop and the card once per opening
+    void buildLayers();                     // renders the backdrop and the card when the window opens
+    juce::Image renderBackdrop (const juce::Image& src) const;   // blur + dim + vignette of a snapshot of the plugin
+    juce::Image grabPanel() const;          // a small live picture of the plugin (everything except this window)
+    void refreshBackdrop();                 // keeps the backdrop moving while the window is open
     void paintCardStatic (juce::Graphics&); // card, header, group panels, analyzer shell and grid
     void paintAnalyzerShell (juce::Graphics&);   // glass, grid, labels, legend (static)
     void paintAnalyzerLive (juce::Graphics&);
@@ -489,7 +492,9 @@ private:
     std::unique_ptr<juce::AudioProcessorValueTreeState::ButtonAttachment> onAttach, tiltAttach;
     juce::TextButton winBtn { "2048" }, doneBtn { "DONE" };   // winBtn cycles the FFT size
 
-    juce::Image sharp, backdrop, cardImg;   // live snapshot (only used while fading in), then two cached layers
+    juce::Image sharp, backdrop, backdropOld, cardImg;   // snapshot (only used while fading in), the live backdrop (and the one it is fading from), the card
+    float blend = 1.f;         // 0..1 crossfade from backdropOld to backdrop
+    double lastSnapMs = 0.0;
     static constexpr float layerScale = 2.f;
     float progress = 0.f;      // 0..1 open animation
     bool closing = false;

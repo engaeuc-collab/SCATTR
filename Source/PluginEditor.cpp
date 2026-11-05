@@ -3797,9 +3797,23 @@ void SpectralOverlay::timerCallback()
         setVisible (false);
         sharp = {};
         backdrop = {};
+        backdropOld = {};
         cardImg = {};
         panel.repaint();
         return;
+    }
+
+    // keep the picture behind the window alive: a fresh blurred copy of the plugin about ten times a second, cross-faded
+    if (! proc.setNoAnim.load() || nowMs - lastSnapMs > 400.0)
+        if (nowMs - lastSnapMs > 100.0 && ! closing)
+        {
+            refreshBackdrop();
+            lastSnapMs = nowMs;
+        }
+    if (blend < 1.f)
+    {
+        blend = juce::jmin (1.f, blend + dt / 0.1f);
+        if (blend >= 1.f) backdropOld = {};
     }
 
     // the keys glide between their looks like the panel's buttons do
@@ -4054,30 +4068,65 @@ void SpectralOverlay::paintCardStatic (juce::Graphics& g)
 }
 
 // Renders the two cached layers. Called once each time the window opens.
-void SpectralOverlay::buildLayers()
+// A blurred, dimmed copy of the plugin with a soft vignette. Drawn at design size: it is blurred anyway, so more pixels would add nothing.
+juce::Image SpectralOverlay::renderBackdrop (const juce::Image& src) const
 {
     const auto& pal = panel.pal;
-    const int iw = juce::roundToInt ((float) ScattrPanel::baseW * layerScale), ih = juce::roundToInt ((float) ScattrPanel::baseH * layerScale);
     const float W = (float) ScattrPanel::baseW, H = (float) ScattrPanel::baseH;
 
-    // backdrop: a blurred, dimmed copy of the plugin with a soft vignette
-    backdrop = juce::Image (juce::Image::RGB, iw, ih, true);
+    juce::Image out (juce::Image::RGB, ScattrPanel::baseW, ScattrPanel::baseH, true);
+    juce::Graphics bg (out);
+    bg.fillAll (pal.bgBot);
+    if (src.isValid())
     {
-        juce::Graphics bg (backdrop);
-        bg.addTransform (juce::AffineTransform::scale (layerScale));
-        bg.fillAll (pal.bgBot);
-        if (sharp.isValid())
-        {
-            const auto blurred = blurSnapshot (sharp, ScattrPanel::baseW / 4, ScattrPanel::baseH / 4, 3, 3);
-            bg.setImageResamplingQuality (juce::Graphics::highResamplingQuality);
-            bg.drawImage (blurred, 0, 0, ScattrPanel::baseW, ScattrPanel::baseH, 0, 0, blurred.getWidth(), blurred.getHeight());
-        }
-        bg.setColour (juce::Colours::black.withAlpha (0.36f));
-        bg.fillAll();
-        juce::ColourGradient vig (juce::Colours::transparentBlack, W * 0.5f, H * 0.5f, juce::Colours::black.withAlpha (0.38f), 0.f, 0.f, true);
-        bg.setGradientFill (vig);
-        bg.fillAll();
+        const auto blurred = blurSnapshot (src, ScattrPanel::baseW / 4, ScattrPanel::baseH / 4, 3, 3);
+        bg.setImageResamplingQuality (juce::Graphics::highResamplingQuality);
+        bg.drawImage (blurred, 0, 0, ScattrPanel::baseW, ScattrPanel::baseH, 0, 0, blurred.getWidth(), blurred.getHeight());
     }
+    bg.setColour (juce::Colours::black.withAlpha (0.36f));
+    bg.fillAll();
+    juce::ColourGradient vig (juce::Colours::transparentBlack, W * 0.5f, H * 0.5f, juce::Colours::black.withAlpha (0.38f), 0.f, 0.f, true);
+    bg.setGradientFill (vig);
+    bg.fillAll();
+    return out;
+}
+
+// Paints the plugin (its own artwork and every visible child except this window) into a small image, so the
+// animations behind the blur keep moving while the window is up.
+juce::Image SpectralOverlay::grabPanel() const
+{
+    constexpr float sc = 0.5f;
+    juce::Image img (juce::Image::ARGB, juce::roundToInt ((float) ScattrPanel::baseW * sc), juce::roundToInt ((float) ScattrPanel::baseH * sc), true);
+    juce::Graphics g (img);
+    g.addTransform (juce::AffineTransform::scale (sc));
+    panel.paint (g);
+    for (auto* c : panel.getChildren())
+    {
+        if (c == this || ! c->isVisible()) continue;
+        juce::Graphics::ScopedSaveState ss (g);
+        g.setOrigin (c->getPosition());
+        g.reduceClipRegion (0, 0, c->getWidth(), c->getHeight());
+        c->paintEntireComponent (g, false);
+    }
+    return img;
+}
+
+void SpectralOverlay::refreshBackdrop()
+{
+    backdropOld = backdrop;
+    backdrop = renderBackdrop (grabPanel());
+    blend = 0.f;   // fade from the previous picture to this one
+}
+
+void SpectralOverlay::buildLayers()
+{
+    const int iw = juce::roundToInt ((float) ScattrPanel::baseW * layerScale), ih = juce::roundToInt ((float) ScattrPanel::baseH * layerScale);
+
+    // backdrop: a blurred, dimmed copy of the plugin with a soft vignette (refreshed while the window is open)
+    backdrop = renderBackdrop (sharp);
+    backdropOld = {};
+    blend = 1.f;
+    lastSnapMs = juce::Time::getMillisecondCounterHiRes();
 
     // card: drawn on a transparent image so its shadow and glow fall onto whatever is behind it
     cardImg = juce::Image (juce::Image::ARGB, iw, ih, true);
@@ -4100,9 +4149,14 @@ void SpectralOverlay::paint (juce::Graphics& g)
         g.fillAll (pal.bgBot);
         if (sharp.isValid()) g.drawImage (sharp, 0, 0, W, H, 0, 0, sharp.getWidth(), sharp.getHeight());
     }
-    if (backdrop.isValid())
+    if (backdropOld.isValid() && blend < 1.f)   // the previous picture, while the new one fades in over it
     {
         g.setOpacity (e);
+        g.drawImage (backdropOld, 0, 0, W, H, 0, 0, backdropOld.getWidth(), backdropOld.getHeight());
+    }
+    if (backdrop.isValid())
+    {
+        g.setOpacity (e * (backdropOld.isValid() && blend < 1.f ? blend : 1.f));
         g.drawImage (backdrop, 0, 0, W, H, 0, 0, backdrop.getWidth(), backdrop.getHeight());
     }
     if (cardImg.isValid())
