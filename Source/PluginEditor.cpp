@@ -189,7 +189,7 @@ const Tip kTips[42] = {
     { "filter",        "Turns the filter on or off." },
     { "echo",          "Turns the echo on or off." },
     { "reverb",        "Turns the reverb on or off." },
-    { "spectral gate", "Opens the spectral gate, which keeps or removes each frequency depending on whether it is above or below a cutoff. Lit while on." },
+    { "spectral gate", "Opens the spectral gate, which keeps or removes each frequency depending on whether it is above or below a cutoff. Lit while on. Right-click to switch it on or off." },
     { "phaser",        "Turns the phaser on or off." },
     { "chorus",        "Turns the chorus on or off." },
     { "equalizer",     "Double-click to add a band, drag a dot to move it, scroll over it to change its width, right-click to change its shape." },
@@ -874,7 +874,12 @@ ScattrPanel::ScattrPanel (ScattrProcessor& p) : proc (p)
     specBtn.setClickingTogglesState (false);                 // the light follows the gate's on/off parameter; a press opens the window
     specBtn.getProperties().set ("fontSize", 12.0);          // the label is longer than DRIFT / TUNE, so it is set a little smaller
     specBtn.setMouseCursor (juce::MouseCursor::PointingHandCursor);
-    specBtn.onClick = [this] { openSpectral(); };
+    specBtn.onClick = [this]
+    {
+        if (specRightDown) { specRightDown = false; return; }   // a right-click toggles the gate (see mouseDown); it does not open the window
+        openSpectral();
+    };
+    specBtn.addMouseListener (this, false);                      // so the panel hears right-clicks on the button
 
     // the pop-out window goes in last so it sits above everything else
     spectral = std::make_unique<SpectralOverlay> (*this, proc);
@@ -1107,6 +1112,20 @@ void ScattrPanel::showSampleMenu (int idx)
 
 void ScattrPanel::mouseDown (const juce::MouseEvent& e)
 {
+    if (e.eventComponent == &specBtn)   // right-click on SPECTRAL GATE: switch the gate on / off without opening the window
+    {
+        specRightDown = e.mods.isPopupMenu();
+        if (specRightDown)
+        {
+            auto* par = proc.apvts.getParameter ("son");
+            const float next = proc.apvts.getRawParameterValue ("son")->load() > 0.5f ? 0.f : 1.f;
+            par->beginChangeGesture();
+            par->setValueNotifyingHost (par->convertTo0to1 (next));
+            par->endChangeGesture();
+        }
+        return;
+    }
+
     if (tab != 0) return;
 
     if (e.mods.isPopupMenu())   // right-click: only does something on a sample row
@@ -3503,9 +3522,6 @@ void SpectralOverlay::paintCardStatic (juce::Graphics& g)
     g.setGradientFill (juce::ColourGradient (pal.ink, 0.f, cd.getY() + 4.f, pal.ink.interpolatedWith (pal.amber, 0.55f), 0.f, cd.getY() + 38.f, false));
     g.drawText ("Spectral Gate", (int) cd.getX() + 22, (int) cd.getY() + 4, 360, 34, juce::Justification::centredLeft);
 
-    g.setFont (Scat::serif (13.f, true));
-    g.setColour (pal.dim);
-    g.drawText ("lets through what is above the cutoff, or what is below it", (int) cd.getX() + 24, (int) cd.getY() + 36, 360, 16, juce::Justification::centredLeft);
 
     static const char* titles[3] = { "gate", "response", "tilt & window" };
     for (int r = 0; r < 3; ++r)

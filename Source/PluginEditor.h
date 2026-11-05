@@ -264,6 +264,7 @@ private:
     juce::ToggleButton tuneBtn { "TUNE" };
     std::unique_ptr<juce::AudioProcessorValueTreeState::ButtonAttachment> tuneAttach;
     juce::ToggleButton specBtn { "SPECTRAL GATE" };   // lit while the gate is on; pressing it opens the pop-out window
+    bool specRightDown = false;                       // the press on specBtn was a right-click (toggles the gate instead of opening the window)
     std::unique_ptr<SpectralOverlay> spectral;        // the pop-out window (hidden until the button is pressed)
     std::unique_ptr<juce::FileChooser> chooser;
 
