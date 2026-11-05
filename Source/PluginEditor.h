@@ -272,8 +272,8 @@ private:
     };
 
     // knobs 0..7, 17..19 and 21 live on the grains tab; 11..16 and 22..29 (delay, reverb, phaser, chorus) on the FX tab.
-    // 8, 9, 10 and 20 were the filter's knobs: the filter is gone, but the slots stay so every other knob keeps its index.
-    static bool retiredKnob (size_t i) { return i == 8 || i == 9 || i == 10 || i == 20; }
+    // 3 was the reverse knob and 8, 9, 10 and 20 the filter's: those are gone, but the slots stay so every other knob keeps its index.
+    static bool retiredKnob (size_t i) { return i == 3 || i == 8 || i == 9 || i == 10 || i == 20; }
     static bool onGrainsTab (size_t knobIndex) { return knobIndex <= 7 || (knobIndex >= 17 && knobIndex <= 19) || knobIndex == 21; }
 
     ScattrProcessor& proc;
@@ -299,8 +299,6 @@ private:
     std::unique_ptr<juce::AudioProcessorValueTreeState::ButtonAttachment> droneAttach;
     juce::ToggleButton tuneBtn { "TUNE" };
     std::unique_ptr<juce::AudioProcessorValueTreeState::ButtonAttachment> tuneAttach;
-    juce::ToggleButton soloBtn { "SOLO" };            // above the reverse knob: hear only the reversed grains (and bypass the grains knobs)
-    std::unique_ptr<juce::AudioProcessorValueTreeState::ButtonAttachment> soloAttach;
     juce::ToggleButton specBtn { "SPECTRAL GATE" };   // lit while the gate is on; pressing it opens the pop-out window
     bool specRightDown = false;                       // the press on specBtn was a right-click (toggles the gate instead of opening the window)
     std::unique_ptr<SpectralOverlay> spectral;        // the pop-out window (hidden until the button is pressed)
@@ -333,7 +331,6 @@ private:
     int playIdx = -1;       // sample the engine is playing right now
     int dragHandle = 0;     // 0 none, 1 start bar, 2 end bar
     bool playing = false, shownPlaying = false;
-    int focusTick = 0;      // counts timer ticks between keyboard-focus checks
     float playGlow = 0.f;   // 0..1: the soft light under the waveform while a sample sounds
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (ScattrPanel)

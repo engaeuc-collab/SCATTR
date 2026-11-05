@@ -1,8 +1,5 @@
 #include "PluginEditor.h"
 
-// Hands the keyboard back to the host's own window (defined at the end of this file; does nothing off Windows)
-static void activateHostWindow (juce::Component&);
-
 using namespace Scat;
 
 namespace
@@ -173,11 +170,11 @@ inline float buttonLit (const juce::Button& b)
 // reverb space, (retired: filter on), the echo / reverb on buttons, the spectral gate button, phaser on, chorus on, and finally
 // the equalizer plot and its PRE button. The retired entries are never shown; they only keep the numbering. ScattrPanel::hoveredControl() returns these indices.
 struct Tip { const char* name; const char* text; };
-const Tip kTips[43] = {
+const Tip kTips[42] = {
     { "seed size",     "Length of each grain. Short is gritty, long is smooth and recognisable." },
     { "rain",          "How many grains fall per second. More makes a thicker, denser cloud." },
     { "speed",         "How fast the playhead travels through each sample. 1x is normal; pitch stays put." },
-    { "reverse",       "Blends in the same grains played backwards. Left is all forwards, right is all reversed." },
+    { "(retired)",     "" },
     { "scatter",       "How far grains stray from the playhead. Low is focused, high is wide." },
     { "bloom",         "Seconds each sample plays before the next one, when no key is held." },
     { "rest",          "Silence between samples, in seconds, when no key is held." },
@@ -214,9 +211,8 @@ const Tip kTips[43] = {
     { "spectral gate", "Opens the spectral gate, which keeps or removes each frequency depending on whether it is above or below a cutoff. Lit while on. Right-click to switch it on or off." },
     { "phaser",        "Turns the phaser on or off." },
     { "chorus",        "Turns the chorus on or off." },
-    { "equalizer",     "Double-click to add a band (up to 24), drag a dot to move it, scroll over it to change its width, right-click it for its shape, slope and dynamic mode. Ctrl+Z undoes." },
-    { "pre",           "Also shows the sound going into the equalizer, as a thin line behind the filled spectrum." },
-    { "solo",          "Plays only the reversed grains. The grain knobs above are bypassed (greyed out) until you switch it off." }
+    { "equalizer",     "Double-click to add a band (up to 24), drag a dot to move it, scroll over it to change its width, hold Shift and scroll to change a cut's slope, right-click it for its shape, slope and dynamic mode. Ctrl+Z undoes." },
+    { "pre",           "Also shows the sound going into the equalizer, as a thin line behind the filled spectrum." }
 };
 
 // A raised, glossy key. `lit` (0..1) is how switched-on it looks: the body, glow and rim fade between the two
@@ -755,7 +751,7 @@ ScattrPanel::ScattrPanel (ScattrProcessor& p) : proc (p)
     // dp = digits shown under the knob (whole numbers for big ranges, 0.00 style for the small ones)
     static const Def defs[30] = {
         { "size", "seed size", 0 }, { "dens", "rain", 0 }, { "speed", "speed", 2 },
-        { "reverse", "reverse", 2 }, { "spray", "scatter", 2 }, { "hold", "bloom", 2 },
+        { "", "", 0 }, { "spray", "scatter", 2 }, { "hold", "bloom", 2 },
         { "gap", "rest", 2 }, { "master", "master", 2 },   // 7: lives on the settings tab
         { "", "", 0 }, { "", "", 0 }, { "", "", 0 },   // 8..10: the old filter's knobs (retired)
         { "dnote", "time", -1 }, { "dfb", "feedback", 2 }, { "dmix", "echo mix", 2 },
@@ -932,9 +928,6 @@ ScattrPanel::ScattrPanel (ScattrProcessor& p) : proc (p)
 
     addAndMakeVisible (specBtn);
     specBtn.setClickingTogglesState (false);                 // the light follows the gate's on/off parameter; a press opens the window
-    addAndMakeVisible (soloBtn);
-    soloAttach = std::make_unique<juce::AudioProcessorValueTreeState::ButtonAttachment> (proc.apvts, "rsolo", soloBtn);
-    soloBtn.getProperties().set ("fontSize", 12.0);
     specBtn.getProperties().set ("fontSize", 12.0);          // the label is longer than DRIFT / TUNE, so it is set a little smaller
     specBtn.setMouseCursor (juce::MouseCursor::PointingHandCursor);
     specBtn.onClick = [this]
@@ -1040,7 +1033,6 @@ void ScattrPanel::setTab (int t)
     droneBtn.setVisible (grains);
     tuneBtn.setVisible (grains);
     specBtn.setVisible (grains);
-    soloBtn.setVisible (grains);
     for (auto& b : setBtn) b.setVisible (sett);
     startBtn.setVisible (sett);
     tabBtn[(size_t) t].setToggleState (true, juce::dontSendNotification);
@@ -1071,18 +1063,12 @@ void ScattrPanel::resized()
         knobs[idx].slider.setBounds (x, y + 38, sw, sliderH);
     };
 
-    // grains tab: two rows of six equal columns, so nothing is left hanging empty at the right-hand end
+    // grains tab: two rows of five equal columns, so nothing is left hanging empty at the right-hand end
     {
-        static const size_t row1[6] = { 0, 1, 2, 3, 4, 21 };      // seed size, rain, speed, reverse, scatter, pan spread
+        static const size_t row1[5] = { 0, 1, 2, 4, 21 };         // seed size, rain, speed, scatter, pan spread
         static const size_t row2[4] = { 5, 6, 19, 17 };            // bloom, rest, random, master tune
-        for (int k = 0; k < 6; ++k) place (row1[k], grainPanel(), 6, k, 88);
+        for (int k = 0; k < 5; ++k) place (row1[k], grainPanel(), 5, k, 88);
 
-        // the solo key sits just above the reverse knob's name
-        {
-            const auto gp = grainPanel();
-            const int sw = (int) ((gp.getWidth() - 24.f) / 6.f);
-            soloBtn.setBounds ((int) gp.getX() + 12 + 3 * sw + (sw - 54) / 2, (int) gp.getY() + 3, 54, 19);
-        }
         for (int k = 0; k < 4; ++k) place (row2[k], motionPanel(), 5, k, 88);
 
         // the last of the motion row's five columns holds the three keys, stacked
@@ -1167,9 +1153,7 @@ bool ScattrPanel::isInterestedInFileDrag (const juce::StringArray&)
 void ScattrPanel::restoreFocus()
 {
     if (! isShowing()) return;
-    activateHostWindow (*this);   // re-activate the host's window, exactly what clicking the top of the plugin did by hand
     if (auto* top = getTopLevelComponent()) top->toFront (true);
-    if (auto* peer = getPeer()) peer->grabFocus();
     grabKeyboardFocus();
 }
 
@@ -1361,7 +1345,7 @@ void ScattrPanel::timerCallback()
 
     // on/off buttons glide between their two looks in 0.2 s
     specBtn.setToggleState (proc.apvts.getRawParameterValue ("son")->load() > 0.5f, juce::dontSendNotification);
-    for (auto* b : { &droneBtn, &tuneBtn, &soloBtn, &donBtn, &ronBtn, &specBtn, &ponBtn, &conBtn, &setBtn[0], &setBtn[1], &setBtn[2] })
+    for (auto* b : { &droneBtn, &tuneBtn, &donBtn, &ronBtn, &specBtn, &ponBtn, &conBtn, &setBtn[0], &setBtn[1], &setBtn[2] })
     {
         const float target = b->getToggleState() ? 1.f : 0.f;
         float v = buttonLit (*b);
@@ -1385,16 +1369,6 @@ void ScattrPanel::timerCallback()
     }
 
     updateEq();
-
-    {   // reverse solo: the grains section is bypassed, so its knobs go grey and stop answering the mouse
-        const bool solo = proc.apvts.getRawParameterValue ("rsolo")->load() > 0.5f;
-        for (size_t idx : { (size_t) 0, (size_t) 1, (size_t) 2, (size_t) 3, (size_t) 4, (size_t) 21 })
-        {
-            knobs[idx].slider.setEnabled (! solo);
-            const float al = solo ? 0.35f : 1.f;
-            if (knobs[idx].slider.getAlpha() != al) { knobs[idx].slider.setAlpha (al); knobs[idx].label.setAlpha (al); }
-        }
-    }
 
     static const char* rt[4] = { "ROOM", "PLATE", "HALL", "CHURCH" };
     const int ri = juce::jlimit (0, 3, (int) proc.apvts.getRawParameterValue ("rtype")->load());
@@ -2631,7 +2605,7 @@ void ScattrPanel::paintKnobGlows (juce::Graphics& g)
 // The wider glow behind an on/off button. It swells as the button switches (see drawKeyBody for the key itself).
 void ScattrPanel::paintToggleGlows (juce::Graphics& g)
 {
-    for (auto* b : { &droneBtn, &tuneBtn, &soloBtn, &donBtn, &ronBtn, &specBtn, &ponBtn, &conBtn, &setBtn[0], &setBtn[1], &setBtn[2] })
+    for (auto* b : { &droneBtn, &tuneBtn, &donBtn, &ronBtn, &specBtn, &ponBtn, &conBtn, &setBtn[0], &setBtn[1], &setBtn[2] })
     {
         if (! b->isVisible()) continue;
 
@@ -2665,7 +2639,6 @@ int ScattrPanel::hoveredControl() const
             return 30 + k;
 
     if (specBtn.isVisible() && specBtn.isMouseOver (true)) return 37;
-    if (soloBtn.isVisible() && soloBtn.isMouseOver (true)) return 42;
     if (ponBtn.isVisible() && ponBtn.isMouseOver (true))   return 38;
     if (conBtn.isVisible() && conBtn.isMouseOver (true))   return 39;
     if (eqView != nullptr && eqView->isVisible())
@@ -2680,7 +2653,7 @@ int ScattrPanel::hoveredControl() const
 // A small field note that rises into the footer, clear of every control
 void ScattrPanel::paintTip (juce::Graphics& g)
 {
-    if (tipAlpha < 0.01f || tipId < 0 || tipId >= 43) return;
+    if (tipAlpha < 0.01f || tipId < 0 || tipId >= 42) return;
 
     const float a = smooth01 (tipAlpha);
     const auto black = juce::Colours::black;
@@ -3201,6 +3174,34 @@ void EqDisplay::mouseWheelMove (const juce::MouseEvent& e, const juce::MouseWhee
     if (b < 0) { Component::mouseWheelMove (e, w); return; }
 
     const auto before = snapshot();
+
+    if (e.mods.isShiftDown())   // shift + scroll: change the slope of a cut band (up = steeper), one step per wheel notch
+    {
+        if (! EqCore::isCut (readBand (b).type)) return;   // only cuts have a slope; leave the width alone
+
+        const float d = w.deltaY != 0.f ? w.deltaY : w.deltaX;   // some systems turn a shifted scroll sideways
+        slopeWheelAcc += d;
+        if (std::abs (slopeWheelAcc) < 0.1f) return;   // fine-grained wheels and trackpads: wait until it adds up to one notch
+        const int dir = slopeWheelAcc > 0.f ? 1 : -1;
+        slopeWheelAcc = 0.f;
+
+        const int cur = readBand (b).slope;
+        const int next = juce::jlimit (0, EqCore::numSlopes - 1, cur + dir);
+        selected = b;
+        if (next == cur) return;
+
+        auto* sp = bp[(size_t) b].slope;
+        sp->beginChangeGesture();
+        setNorm (sp, (float) next);
+        sp->endChangeGesture();
+
+        const double nowS = juce::Time::getMillisecondCounterHiRes();
+        if (b != lastWheelBand || nowS - lastWheelMs > 600.0) record (before);
+        lastWheelBand = b;
+        lastWheelMs = nowS;
+        return;
+    }
+
     auto* par = bp[(size_t) b].q;
     const float q = juce::jlimit (0.1f, 18.f, readBand (b).q * std::exp (w.deltaY * 2.5f));   // scroll up = narrower
     par->beginChangeGesture();
@@ -4156,26 +4157,4 @@ void ScattrEditor::resized()
 {
     panel.setBounds (0, 0, ScattrPanel::baseW, ScattrPanel::baseH);
     panel.setTransform (juce::AffineTransform::scale ((float) getWidth() / (float) ScattrPanel::baseW));
-}
-
-// ---------------------------------------------------------------- host window focus
-
-#if JUCE_WINDOWS
- #ifndef NOMINMAX
-  #define NOMINMAX
- #endif
- #ifndef WIN32_LEAN_AND_MEAN
-  #define WIN32_LEAN_AND_MEAN
- #endif
- #include <windows.h>
-#endif
-
-static void activateHostWindow ([[maybe_unused]] juce::Component& c)
-{
-   #if JUCE_WINDOWS
-    if (auto* peer = c.getPeer())
-        if (auto h = (HWND) peer->getNativeHandle())
-            if (HWND root = ::GetAncestor (h, GA_ROOT))
-                ::SetForegroundWindow (root);
-   #endif
 }

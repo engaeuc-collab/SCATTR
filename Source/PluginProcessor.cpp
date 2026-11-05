@@ -22,7 +22,6 @@ juce::AudioProcessorValueTreeState::ParameterLayout makeLayout()
         r.setSkewForCentre (1.f);
         p.push_back (std::make_unique<juce::AudioParameterFloat> (juce::ParameterID { "speed", 1 }, "Speed", r, 1.f));
     }
-    add ("reverse", "Reverse",    0.f, 1.f,   0.f,   1.f);   // 0 = all grains forward (dry), 1 = all reversed; in between both are heard
     add ("spray", "Spray",        0.f, 1.f,   0.1f,  1.f);
     add ("hold",  "Hold",         0.5f, 20.f, 4.f,   0.5f);
     add ("gap",   "Gap",          0.f, 5.f,   0.3f,  1.f);
@@ -110,7 +109,6 @@ juce::AudioProcessorValueTreeState::ParameterLayout makeLayout()
 
     // spectral gate (the pop-out window). Off by default.
     p.push_back (std::make_unique<juce::AudioParameterBool> (juce::ParameterID { "son", 1 }, "Spectral Gate On", false));
-    p.push_back (std::make_unique<juce::AudioParameterBool> (juce::ParameterID { "rsolo", 1 }, "Reverse Solo", false));   // the SOLO key above the reverse knob: hear only the reversed grains
     add ("sthr",     "Gate Cutoff Amplitude", -90.f, 0.f,  -44.4f, 1.f);   // bins above it are "strong", bins below it are "weak"
     add ("sbal",     "Gate Weak/Strong Balance", 0.f, 1.f,  0.7f,  1.f);   // 0 = only weak bins pass, 0.5 = all pass, 1 = only strong bins pass
     p.push_back (std::make_unique<juce::AudioParameterBool> (juce::ParameterID { "stilton", 1 }, "Gate Enable Tilt", false));
@@ -416,12 +414,8 @@ void ScattrProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::Midi
     }
 
     auto prm = [this] (const char* id) { return apvts.getRawParameterValue (id)->load(); };
-    // Reverse solo bypasses the grains section: seed size, rain, speed, scatter and pan spread fall back to their
-    // default values and the reverse blend is forced fully reversed, whatever those knobs are set to.
-    const bool soloOn = prm ("rsolo") > 0.5f;
-    const float sizeMs = soloOn ? 120.f : prm ("size"), dens = soloOn ? 25.f : prm ("dens"), speed = soloOn ? 1.f : prm ("speed"), reverse = prm ("reverse"),
-                spray = soloOn ? 0.1f : prm ("spray"), holdS = prm ("hold"), gapS = prm ("gap"), cycleS = prm ("cycle"), randAmt = prm ("rand"), width = soloOn ? 0.5f : prm ("width");
-    const bool reverseSolo = prm ("rsolo") > 0.5f;   // while on, the grain knobs are bypassed (see below)
+    const float sizeMs = prm ("size"), dens = prm ("dens"), speed = prm ("speed"),
+                spray = prm ("spray"), holdS = prm ("hold"), gapS = prm ("gap"), cycleS = prm ("cycle"), randAmt = prm ("rand"), width = prm ("width");
     const bool active = prm ("drone") > 0.5f || notesHeld > 0;
     juce::ignoreUnused (cycleS);   // the cycle knob is retired; held keys play each sample through
     const bool keyMode = notesHeld > 0;   // a key is down: the sample plays through once, then waits for the next key
@@ -510,27 +504,19 @@ void ScattrProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::Midi
         const float pan = 0.5f + (rng.nextFloat() - 0.5f) * width * 0.8f;
         const float halfPi = juce::MathConstants<float>::halfPi;
 
-        // One grain plays the chosen stretch of the sample forwards, the other plays the very same stretch backwards.
-        // The reverse knob balances them (equal power): 0 = only the forward grain (the dry sound), 1 = only the reversed one.
-        auto launch = [&] (bool backwards, float gain)
+        Grain* slot = nullptr;
+        for (auto& g : grains) if (! g.active) { slot = &g; break; }
+        if (slot != nullptr)
         {
-            Grain* slot = nullptr;
-            for (auto& g : grains) if (! g.active) { slot = &g; break; }
-            if (slot == nullptr) return;
-
             slot->active = true;
             slot->s = &s;
-            slot->pos = backwards ? start + (double) (len - 1) * inc : start;
-            slot->inc = backwards ? -inc : inc;
+            slot->pos = start;
+            slot->inc = inc;
             slot->age = 0;
             slot->len = len;
-            slot->gl = std::cos (pan * halfPi) * 1.4142f * gain;
-            slot->gr = std::sin (pan * halfPi) * 1.4142f * gain;
-        };
-
-        const float rv = reverseSolo ? 1.f : juce::jlimit (0.f, 1.f, reverse);   // solo: only the reversed grains, whatever the knob says
-        if (rv < 0.999f) launch (false, std::cos (rv * halfPi));
-        if (rv > 0.001f) launch (true,  std::sin (rv * halfPi));
+            slot->gl = std::cos (pan * halfPi) * 1.4142f;
+            slot->gr = std::sin (pan * halfPi) * 1.4142f;
+        }
         if (idx == cur) uiGrain.store ((float) (start / srcLen));
     };
 
