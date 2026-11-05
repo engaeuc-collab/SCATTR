@@ -147,10 +147,11 @@ inline float buttonLit (const juce::Button& b)
     return b.getToggleState() ? 1.f : 0.f;
 }
 
-// Hover notes. The index order matches ScattrPanel::hoveredControl(): the 22 knobs (same order as the
-// `knobs` array), then DRIFT, TUNE, filter mode, reverb space and the three on/off buttons, then the spectral gate button.
+// Hover notes. Indices 0..29 are the knobs (same order as the `knobs` array); then DRIFT, TUNE, filter mode,
+// reverb space, the filter / echo / reverb on buttons, the spectral gate button, phaser on, chorus on, and finally
+// the equalizer plot and its PRE button. ScattrPanel::hoveredControl() returns these indices.
 struct Tip { const char* name; const char* text; };
-const Tip kTips[30] = {
+const Tip kTips[42] = {
     { "seed size",     "Length of each grain. Short is gritty, long is smooth and recognisable." },
     { "rain",          "How many grains fall per second. More makes a thicker, denser cloud." },
     { "speed",         "How fast the playhead travels through each sample. 1x is normal; pitch stays put." },
@@ -173,6 +174,14 @@ const Tip kTips[30] = {
     { "random",        "Chance that a grain is borrowed from a different sample." },
     { "filter mix",    "Blends between the dry sound and the filtered sound." },
     { "pan spread",    "Scatters grains randomly left and right. Zero keeps them centred." },
+    { "phaser rate",   "How fast the phaser sweeps up and down." },
+    { "phaser depth",  "How far the sweep reaches around its centre." },
+    { "phaser center", "The middle of the sweep, in Hz. Lower is deeper and swirlier, higher is airier." },
+    { "phaser feedback", "Feeds the phaser back into itself. More is sharper and more resonant; negative sounds hollow." },
+    { "phaser mix",    "Blends the phased sound with the dry sound." },
+    { "chorus rate",   "How fast the chorus wobbles." },
+    { "chorus depth",  "How much the pitch wavers. A little is lush, a lot is seasick." },
+    { "chorus mix",    "Blends the chorus with the dry sound." },
     { "drift",         "On: plays by itself. Off: only sounds while a key is held." },
     { "tune",          "On: samples retune to the key you play. Off: keys just transpose them." },
     { "filter mode",   "Click to cycle between low-pass, high-pass and band-pass." },
@@ -180,7 +189,11 @@ const Tip kTips[30] = {
     { "filter",        "Turns the filter on or off." },
     { "echo",          "Turns the echo on or off." },
     { "reverb",        "Turns the reverb on or off." },
-    { "spectral gate", "Opens the spectral gate, which keeps or removes each frequency depending on whether it is above or below a cutoff. Lit while on." }
+    { "spectral gate", "Opens the spectral gate, which keeps or removes each frequency depending on whether it is above or below a cutoff. Lit while on." },
+    { "phaser",        "Turns the phaser on or off." },
+    { "chorus",        "Turns the chorus on or off." },
+    { "equalizer",     "Double-click to add a band, drag a dot to move it, scroll over it to change its width, right-click to change its shape." },
+    { "pre",           "Also shows the sound going into the equalizer, as a thin line behind the filled spectrum." }
 };
 
 // A raised, glossy key. `lit` (0..1) is how switched-on it looks: the body, glow and rim fade between the two
@@ -233,6 +246,308 @@ void drawKeyBody (juce::Graphics& g, juce::Rectangle<float> bounds, float lit, b
 
 // ---------------------------------------------------------------- look and feel
 
+// ---------------------------------------------------------------- theme props and knob details
+namespace
+{
+// Little props used by the new themes (butterfly, bubble, fern frond, cactus, lavender sprig, dewdrop).
+void drawButterfly (juce::Graphics& g, float x, float y, float s, float phase, juce::Colour wing, juce::Colour edge)
+{
+    const float flap = 0.25f + 0.75f * std::abs (std::sin (phase));
+    for (int side = -1; side <= 1; side += 2)
+    {
+        const float sx = (float) side;
+        g.setColour (wing.withAlpha (0.92f));
+        g.fillEllipse (x + (sx > 0 ? 0.f : -s * flap) , y - s * 0.95f, s * flap, s * 0.95f);            // upper wing
+        g.fillEllipse (x + (sx > 0 ? 0.f : -s * 0.75f * flap), y - s * 0.12f, s * 0.75f * flap, s * 0.7f);  // lower wing
+        g.setColour (edge.withAlpha (0.55f));
+        g.drawEllipse (x + (sx > 0 ? 0.f : -s * flap), y - s * 0.95f, s * flap, s * 0.95f, 0.7f);
+    }
+    g.setColour (edge.darker (0.7f));
+    g.drawLine (x, y - s * 0.8f, x, y + s * 0.55f, 1.3f);
+}
+
+void drawBubble (juce::Graphics& g, float x, float y, float r, juce::Colour c, float a)
+{
+    g.setColour (c.withAlpha (a * 0.12f));
+    g.fillEllipse (x - r, y - r, r * 2.f, r * 2.f);
+    g.setColour (c.withAlpha (a * 0.75f));
+    g.drawEllipse (x - r, y - r, r * 2.f, r * 2.f, 1.f);
+    g.setColour (juce::Colours::white.withAlpha (a * 0.8f));
+    g.fillEllipse (x - r * 0.55f, y - r * 0.6f, r * 0.45f, r * 0.45f);
+}
+
+// A fern frond: a curved rib with leaflets that shrink towards the tip. `dir` leans it left (-1) or right (1).
+void drawFern (juce::Graphics& g, float x, float y, float len, float dir, juce::Colour c, float sway)
+{
+    const juce::Point<float> p0 (x, y), p1 (x + dir * len * 0.12f, y - len * 0.55f),
+                             p2 (x + dir * len * 0.6f + sway * len, y - len * 0.92f);
+    juce::Path rib;
+    rib.startNewSubPath (p0);
+    rib.quadraticTo (p1, p2);
+    g.setColour (c);
+    g.strokePath (rib, juce::PathStrokeType (1.3f));
+
+    for (float t = 0.18f; t < 0.97f; t += 0.1f)
+    {
+        const float u = 1.f - t;
+        const juce::Point<float> p (u * u * p0.x + 2.f * u * t * p1.x + t * t * p2.x, u * u * p0.y + 2.f * u * t * p1.y + t * t * p2.y);
+        const juce::Point<float> d (2.f * u * (p1.x - p0.x) + 2.f * t * (p2.x - p1.x), 2.f * u * (p1.y - p0.y) + 2.f * t * (p2.y - p1.y));
+        const float dl = std::sqrt (d.x * d.x + d.y * d.y) + 1.0e-4f;
+        const juce::Point<float> n (-d.y / dl, d.x / dl);   // perpendicular
+        const float ll = (1.f - t) * len * 0.3f + 2.f;
+        g.drawLine (p.x, p.y, p.x + (n.x * 0.8f + d.x / dl * 0.5f) * ll, p.y + (n.y * 0.8f + d.y / dl * 0.5f) * ll, 1.f);
+        g.drawLine (p.x, p.y, p.x - (n.x * 0.8f - d.x / dl * 0.5f) * ll, p.y - (n.y * 0.8f - d.y / dl * 0.5f) * ll, 1.f);
+    }
+}
+
+void drawCactus (juce::Graphics& g, float x, float baseY, float h, juce::Colour c, juce::Colour bloom)
+{
+    g.setColour (c);
+    g.fillRoundedRectangle (x - 2.6f, baseY - h, 5.2f, h + 2.f, 2.6f);                       // trunk
+    g.fillRoundedRectangle (x - 8.f, baseY - h * 0.55f, 6.f, 3.2f, 1.6f);                    // left arm, out ...
+    g.fillRoundedRectangle (x - 8.f, baseY - h * 0.55f - 6.f, 3.2f, 9.f, 1.6f);              // ... and up
+    g.fillRoundedRectangle (x + 2.f, baseY - h * 0.4f, 6.f, 3.2f, 1.6f);                     // right arm
+    g.fillRoundedRectangle (x + 4.8f, baseY - h * 0.4f - 5.f, 3.2f, 8.f, 1.6f);
+    g.setColour (c.brighter (0.3f).withAlpha (0.5f));
+    g.drawLine (x - 0.6f, baseY - h + 2.f, x - 0.6f, baseY, 0.8f);                           // a highlight rib
+    g.setColour (bloom);
+    g.fillEllipse (x - 2.f, baseY - h - 3.f, 4.f, 4.f);
+}
+
+void drawLavenderSprig (juce::Graphics& g, float x, float y, float h, float lean, juce::Colour stem, juce::Colour floret)
+{
+    g.setColour (stem);
+    g.drawLine (x, y, x + lean, y - h, 1.3f);
+    for (int k = 0; k < 7; ++k)
+    {
+        const float t = 0.42f + 0.085f * (float) k;
+        const float px = x + lean * t + ((k % 2 == 0) ? -1.7f : 1.7f), py = y - h * t;
+        g.setColour ((k % 2 == 0 ? floret : floret.brighter (0.25f)).withAlpha (0.95f));
+        g.fillEllipse (px - 1.5f, py - 2.2f, 3.f, 4.4f);
+    }
+}
+
+void drawDew (juce::Graphics& g, float x, float y, float r, juce::Colour tint)
+{
+    g.setColour (tint.withAlpha (0.28f));
+    g.fillEllipse (x - r, y - r, r * 2.f, r * 2.f);
+    g.setColour (juce::Colours::white.withAlpha (0.45f));
+    g.drawEllipse (x - r, y - r, r * 2.f, r * 2.f, 0.8f);
+    g.setColour (juce::Colours::white.withAlpha (0.85f));
+    g.fillEllipse (x - r * 0.55f, y - r * 0.6f, r * 0.5f, r * 0.5f);
+}
+
+// What the pointer on the knob looks like, per theme.
+enum class Pointer { Leaf, Maple, Crystal, Petal, Drop, Blade, Crescent };
+Pointer pointerFor (int theme)
+{
+    static const Pointer kinds[10] = { Pointer::Leaf, Pointer::Maple, Pointer::Crystal, Pointer::Petal, Pointer::Leaf,
+                                       Pointer::Drop, Pointer::Blade, Pointer::Crescent, Pointer::Leaf, Pointer::Petal };
+    return kinds[juce::jlimit (0, 9, theme)];
+}
+
+// A small themed ornament on the stump's upper-left shoulder (moss, fallen leaf, snow, blossom, ...).
+// Everything is clipped to the stump, so nothing hangs off the knob.
+void drawKnobDecor (juce::Graphics& g, int theme, juce::Point<float> c, float rad, const Palette& pal, float pulse)
+{
+    const float s = rad * 0.17f;
+    const juce::Point<float> p (c.x - rad * 0.64f, c.y - rad * 0.58f);
+
+    juce::Graphics::ScopedSaveState ss (g);
+    juce::Path clip;
+    clip.addEllipse (c.x - rad, c.y - rad, rad * 2.f, rad * 2.f);
+    g.reduceClipRegion (clip);
+
+    switch (theme)
+    {
+        default:
+        case 0:   // summer: a cushion of moss with a clover
+            g.setColour (pal.grassDark.withAlpha (0.8f));
+            g.fillEllipse (p.x - 1.7f * s, p.y - 0.4f * s, 2.8f * s, 1.6f * s);
+            g.fillEllipse (p.x - 0.5f * s, p.y - 1.2f * s, 2.4f * s, 1.6f * s);
+            g.fillEllipse (p.x + 0.3f * s, p.y - 0.1f * s, 2.2f * s, 1.4f * s);
+            g.setColour (pal.grass.withAlpha (0.7f));
+            g.fillEllipse (p.x - 0.9f * s, p.y - 0.2f * s, 1.2f * s, 0.7f * s);
+            g.fillEllipse (p.x + 0.5f * s, p.y - 0.8f * s, 1.0f * s, 0.6f * s);
+            for (int k = 0; k < 3; ++k)
+            {
+                const float a = (float) k * 2.094f + 0.5f;
+                g.fillEllipse (p.x + 1.4f * s + std::sin (a) * 0.45f * s - 0.4f * s, p.y + 0.9f * s - std::cos (a) * 0.45f * s - 0.4f * s, 0.8f * s, 0.8f * s);
+            }
+            break;
+
+        case 1:   // autumn: fallen maple leaves
+            drawMaple (g, p.x, p.y, 0.9f, s * 1.5f, pal.amber.withAlpha (0.92f));
+            drawMaple (g, p.x + 1.9f * s, p.y + 1.5f * s, -0.6f, s * 1.0f, pal.acc.withAlpha (0.9f));
+            break;
+
+        case 2:   // winter: a drift of snow with a few sparkles
+            g.setColour (pal.ink.withAlpha (0.92f));
+            g.fillEllipse (p.x - 2.0f * s, p.y - 0.6f * s, 4.0f * s, 1.9f * s);
+            g.fillEllipse (p.x - 1.2f * s, p.y - 1.5f * s, 2.5f * s, 1.5f * s);
+            g.setColour (pal.glow.withAlpha (0.35f));
+            g.fillEllipse (p.x - 1.4f * s, p.y + 0.5f * s, 2.8f * s, 0.7f * s);
+            g.setColour (juce::Colours::white.withAlpha (0.4f + 0.5f * pulse));
+            g.fillEllipse (p.x + 2.1f * s, p.y + 0.6f * s, 0.55f * s, 0.55f * s);
+            g.fillEllipse (p.x + 1.0f * s, p.y + 1.7f * s, 0.4f * s, 0.4f * s);
+            break;
+
+        case 3:   // spring: a blossom and a loose petal
+            drawBlossom (g, p.x, p.y, s * 1.3f, pal.acc.brighter (0.45f), pal.amber, pal.accDark);
+            g.setColour (pal.acc.brighter (0.5f).withAlpha (0.9f));
+            g.fillEllipse (p.x + 1.6f * s, p.y + 1.0f * s, 1.5f * s, 0.9f * s);
+            break;
+
+        case 4:   // meadow: a daisy and a blade of grass
+            drawLeaf (g, p.x + 1.3f * s, p.y + 1.5f * s, 2.2f, s * 1.8f, pal.grass.withAlpha (0.9f));
+            drawFlower (g, p.x, p.y, s * 1.35f, pal.ink, pal.acc);
+            break;
+
+        case 5:   // tide: pearls and a bubble
+            for (int k = 0; k < 3; ++k)
+            {
+                static const float ox[3] = { 0.f, 1.6f, -0.2f }, oy[3] = { 0.f, 0.9f, 1.6f }, rr[3] = { 0.9f, 0.65f, 0.5f };
+                const float px = p.x + ox[k] * s, py = p.y + oy[k] * s, r = rr[k] * s;
+                g.setGradientFill (juce::ColourGradient (pal.ink, px - r * 0.4f, py - r * 0.4f, pal.amber.darker (0.15f), px + r, py + r, true));
+                g.fillEllipse (px - r, py - r, r * 2.f, r * 2.f);
+            }
+            g.setColour (pal.acc.withAlpha (0.6f));
+            g.drawEllipse (p.x + 1.0f * s, p.y - 1.1f * s, 1.1f * s, 1.1f * s, 0.9f);
+            break;
+
+        case 6:   // dune: pebbles in the sand
+            for (int k = 0; k < 3; ++k)
+            {
+                static const float ox[3] = { 0.f, 1.7f, 0.5f }, oy[3] = { 0.f, 0.6f, 1.5f }, rw[3] = { 1.7f, 1.2f, 1.0f };
+                const float px = p.x + ox[k] * s, py = p.y + oy[k] * s;
+                g.setColour (pal.bark.brighter (0.1f + 0.12f * (float) k).withAlpha (0.95f));
+                g.fillEllipse (px - rw[k] * s * 0.5f, py - rw[k] * s * 0.32f, rw[k] * s, rw[k] * s * 0.64f);
+                g.setColour (juce::Colours::white.withAlpha (0.18f));
+                g.fillEllipse (px - rw[k] * s * 0.3f, py - rw[k] * s * 0.25f, rw[k] * s * 0.4f, rw[k] * s * 0.18f);
+            }
+            break;
+
+        case 7:   // moonlit: a glowing mushroom
+        {
+            g.setGradientFill (juce::ColourGradient (pal.acc.withAlpha (0.20f + 0.14f * pulse), p.x, p.y, pal.acc.withAlpha (0.f), p.x + 3.4f * s, p.y, true));
+            g.fillEllipse (p.x - 3.4f * s, p.y - 3.4f * s, 6.8f * s, 6.8f * s);
+            g.setColour (pal.ink.withAlpha (0.8f));
+            g.fillRoundedRectangle (p.x - 0.3f * s, p.y - 0.1f * s, 0.6f * s, 1.4f * s, 0.3f * s);
+            g.setColour (pal.acc);
+            g.fillEllipse (p.x - 1.2f * s, p.y - 1.3f * s, 2.4f * s, 1.5f * s);
+            g.setColour (juce::Colours::white.withAlpha (0.7f));
+            g.fillEllipse (p.x - 0.5f * s, p.y - 0.9f * s, 0.4f * s, 0.4f * s);
+            break;
+        }
+
+        case 8:   // rain: dewdrops on the wood
+            drawDew (g, p.x, p.y, s * 0.95f, pal.glow);
+            drawDew (g, p.x + 1.7f * s, p.y + 0.8f * s, s * 0.65f, pal.glow);
+            drawDew (g, p.x - 0.2f * s, p.y + 1.7f * s, s * 0.5f, pal.glow);
+            break;
+
+        case 9:   // lavender: a sprig laid across the rim
+            drawLavenderSprig (g, p.x - 1.5f * s, p.y + 2.0f * s, s * 4.2f, s * 2.4f, pal.grassDark, pal.acc);
+            break;
+    }
+}
+
+// The pointer: a leaf, maple leaf, frost crystal, petal, droplet, blade or crescent moon depending on the theme.
+void drawKnobPointer (juce::Graphics& g, int theme, juce::Point<float> c, float rad, float a, const Palette& pal)
+{
+    const auto kind = pointerFor (theme);
+    const float len = rad * 0.75f, wid = rad * 0.26f;
+    const auto black = juce::Colours::black;
+
+    if (kind == Pointer::Maple)
+    {
+        const float r = rad * 0.4f, o = rad * 0.55f;
+        const float px = c.x + std::sin (a) * o, py = c.y - std::cos (a) * o;
+        drawMaple (g, px + 1.2f, py + 2.f, a, r, black.withAlpha (0.3f));
+        drawMaple (g, px, py, a, r, pal.amber.brighter (0.1f));
+        return;
+    }
+
+    juce::Path shape, detail;
+    switch (kind)
+    {
+        default:
+        case Pointer::Leaf:
+            shape = Scat::leafPath (len, wid);
+            detail.startNewSubPath (0.f, 0.f);  detail.lineTo (0.f, -len * 0.85f);
+            for (float t : { 0.32f, 0.55f })
+            {
+                detail.startNewSubPath (0.f, -len * t);  detail.lineTo ( wid * 0.85f, -len * (t + 0.13f));
+                detail.startNewSubPath (0.f, -len * t);  detail.lineTo (-wid * 0.85f, -len * (t + 0.13f));
+            }
+            break;
+
+        case Pointer::Blade:
+            shape = Scat::leafPath (len * 1.05f, wid * 0.55f);
+            detail.startNewSubPath (0.f, 0.f);  detail.lineTo (0.f, -len * 0.9f);
+            break;
+
+        case Pointer::Crystal:
+            shape.startNewSubPath (0.f, 0.f);
+            shape.lineTo (wid * 1.05f, -len * 0.38f);
+            shape.lineTo (0.f, -len);
+            shape.lineTo (-wid * 1.05f, -len * 0.38f);
+            shape.closeSubPath();
+            detail.startNewSubPath (0.f, 0.f);                     detail.lineTo (0.f, -len);
+            detail.startNewSubPath (-wid * 1.05f, -len * 0.38f);   detail.lineTo (wid * 1.05f, -len * 0.38f);
+            break;
+
+        case Pointer::Petal:
+            shape.startNewSubPath (0.f, 0.f);
+            shape.cubicTo (wid * 1.8f, -len * 0.2f, wid * 1.4f, -len * 0.95f, 0.f, -len);
+            shape.cubicTo (-wid * 1.4f, -len * 0.95f, -wid * 1.8f, -len * 0.2f, 0.f, 0.f);
+            shape.closeSubPath();
+            detail.startNewSubPath (0.f, -len * 0.1f);  detail.lineTo (0.f, -len * 0.8f);
+            break;
+
+        case Pointer::Drop:
+        {
+            const float rr = wid * 1.45f;
+            shape.startNewSubPath (0.f, -len);
+            shape.cubicTo (rr * 0.35f, -len * 0.7f, rr * 1.0f, -rr * 1.7f, rr, -rr);
+            shape.cubicTo (rr, -rr * 0.45f, rr * 0.5f, 0.f, 0.f, 0.f);
+            shape.cubicTo (-rr * 0.5f, 0.f, -rr, -rr * 0.45f, -rr, -rr);
+            shape.cubicTo (-rr * 1.0f, -rr * 1.7f, -rr * 0.35f, -len * 0.7f, 0.f, -len);
+            shape.closeSubPath();
+            detail.addEllipse (-rr * 0.55f, -rr * 1.35f, rr * 0.5f, rr * 0.7f);   // a highlight
+            break;
+        }
+
+        case Pointer::Crescent:
+            shape.startNewSubPath (0.f, -len);
+            shape.quadraticTo (wid * 2.7f, -len * 0.5f, 0.f, 0.f);
+            shape.quadraticTo (wid * 0.55f, -len * 0.5f, 0.f, -len);
+            shape.closeSubPath();
+            break;
+    }
+
+    const auto t = juce::AffineTransform::translation (0.f, -rad * 0.2f)
+                       .followedBy (juce::AffineTransform::rotation (a))
+                       .followedBy (juce::AffineTransform::translation (c.x, c.y));
+    g.setColour (black.withAlpha (0.3f));
+    g.fillPath (shape, t.translated (1.2f, 2.f));
+    g.setGradientFill (juce::ColourGradient (pal.amber.brighter (0.3f), c.x, c.y - rad,
+                                             pal.amber.darker (0.25f), c.x, c.y + rad * 0.3f, false));
+    g.fillPath (shape, t);
+
+    if (kind == Pointer::Drop)
+    {
+        g.setColour (juce::Colours::white.withAlpha (0.55f));
+        g.fillPath (detail, t);
+    }
+    else if (! detail.isEmpty())
+    {
+        g.setColour (pal.amber.darker (0.6f).withAlpha (0.65f));
+        g.strokePath (detail, juce::PathStrokeType (0.9f), t);
+    }
+}
+} // namespace
+
 ScattrLNF::ScattrLNF()
 {
     setPalette (Scat::themes()[0].pal);
@@ -265,7 +580,7 @@ void ScattrLNF::drawRotarySlider (juce::Graphics& g, int x, int y, int w, int h,
     for (int i = 3; i >= 1; --i)
     {
         const float e = (float) i * 2.f;
-        g.setColour (black.withAlpha (0.13f));
+        g.setColour (black.withAlpha (0.09f));
         g.fillEllipse (c.x - rad - e, c.y - rad - e + 4.f, (rad + e) * 2.f, (rad + e) * 2.f);
     }
 
@@ -277,9 +592,25 @@ void ScattrLNF::drawRotarySlider (juce::Graphics& g, int x, int y, int w, int h,
         g.setGradientFill (body);
         g.fillEllipse (c.x - rad, c.y - rad, rad * 2.f, rad * 2.f);
 
-        g.setGradientFill (juce::ColourGradient (white.withAlpha (hot ? 0.36f : 0.24f), c.x, c.y - rad,
-                                                 black.withAlpha (0.45f), c.x, c.y + rad, false));
+        g.setGradientFill (juce::ColourGradient (white.withAlpha (hot ? 0.28f : 0.17f), c.x, c.y - rad,
+                                                 black.withAlpha (0.32f), c.x, c.y + rad, false));
         g.drawEllipse (c.x - rad + 0.8f, c.y - rad + 0.8f, rad * 2.f - 1.6f, rad * 2.f - 1.6f, 1.6f);
+
+        // bark: a ring of short, uneven grooves just inside the rim
+        if (rad > 20.f)
+        {
+            juce::Path grooves;
+            const int n = 30;
+            for (int k = 0; k < n; ++k)
+            {
+                const float ang = (float) k * juce::MathConstants<float>::twoPi / (float) n + 0.11f * (float) (k % 3);
+                const float r0 = rad * (0.83f + 0.035f * (float) (k % 2)), r1 = rad * 0.95f;
+                grooves.startNewSubPath (c.x + std::sin (ang) * r0, c.y - std::cos (ang) * r0);
+                grooves.lineTo (c.x + std::sin (ang) * r1, c.y - std::cos (ang) * r1);
+            }
+            g.setColour (black.withAlpha (0.13f));
+            g.strokePath (grooves, juce::PathStrokeType (1.f));
+        }
     }
 
     // sunken centre cap (the opposite light direction makes it read as a dish)
@@ -288,10 +619,27 @@ void ScattrLNF::drawRotarySlider (juce::Graphics& g, int x, int y, int w, int h,
         g.setGradientFill (juce::ColourGradient (pal.soil.darker (0.5f), c.x, c.y - ic,
                                                  pal.moss.brighter (0.15f), c.x, c.y + ic, false));
         g.fillEllipse (c.x - ic, c.y - ic, ic * 2.f, ic * 2.f);
-        g.setGradientFill (juce::ColourGradient (black.withAlpha (0.5f), c.x, c.y - ic,
-                                                 white.withAlpha (0.18f), c.x, c.y + ic, false));
+        g.setGradientFill (juce::ColourGradient (black.withAlpha (0.4f), c.x, c.y - ic,
+                                                 white.withAlpha (0.14f), c.x, c.y + ic, false));
         g.drawEllipse (c.x - ic, c.y - ic, ic * 2.f, ic * 2.f, 1.2f);
+
+        // tree rings, slightly off-centre like a real cross-section, round a small heartwood
+        if (rad > 20.f)
+        {
+            const float ox = ic * 0.05f, oy = ic * 0.035f;
+            g.setColour (black.withAlpha (0.10f));
+            for (int k = 1; k <= 3; ++k)
+            {
+                const float rr = ic * (0.28f + 0.22f * (float) k);
+                g.drawEllipse (c.x - rr + ox, c.y - rr + oy, rr * 2.f, rr * 2.f, 0.8f);
+            }
+            g.setColour (pal.bark.withAlpha (0.30f));
+            g.fillEllipse (c.x - ic * 0.09f + ox, c.y - ic * 0.09f + oy, ic * 0.18f, ic * 0.18f);
+        }
     }
+
+    // the theme's little ornament on the stump's shoulder (moss, a fallen leaf, snow, a blossom, ...)
+    drawKnobDecor (g, style, c, rad, pal, pulse);
 
     // growth arc: a soft bloom underneath, then a core that warms from deep to bright along its length
     // (the wide bloom behind the whole knob is painted by the panel, where it has room to spread)
@@ -303,6 +651,14 @@ void ScattrLNF::drawRotarySlider (juce::Graphics& g, int x, int y, int w, int h,
     g.strokePath (track, juce::PathStrokeType (4.5f));
     g.setColour (pal.line);
     g.strokePath (track, juce::PathStrokeType (2.5f));
+
+    // five tiny seeds along the outside of the track mark the quarter points
+    g.setColour (pal.dim.withAlpha (0.28f));
+    for (int k = 0; k < 5; ++k)
+    {
+        const float ta = a0 + (a1 - a0) * (float) k * 0.25f, tr = ar + 4.6f;
+        g.fillEllipse (c.x + std::sin (ta) * tr - 0.9f, c.y - std::cos (ta) * tr - 0.9f, 1.8f, 1.8f);
+    }
 
     if (pos > 0.001f)
     {
@@ -338,21 +694,8 @@ void ScattrLNF::drawRotarySlider (juce::Graphics& g, int x, int y, int w, int h,
         g.fillEllipse (bx - 1.8f, by - 1.8f, 3.6f, 3.6f);
     }
 
-    // leaf pointer (with its own little shadow)
-    const auto t = juce::AffineTransform::translation (0.f, -rad * 0.2f)
-                       .followedBy (juce::AffineTransform::rotation (a))
-                       .followedBy (juce::AffineTransform::translation (c.x, c.y));
-    const auto leaf = Scat::leafPath (rad * 0.75f, rad * 0.26f);
-    g.setColour (black.withAlpha (0.35f));
-    g.fillPath (leaf, t.translated (1.2f, 2.f));
-    g.setGradientFill (juce::ColourGradient (pal.amber.brighter (0.3f), c.x, c.y - rad,
-                                             pal.amber.darker (0.25f), c.x, c.y + rad * 0.3f, false));
-    g.fillPath (leaf, t);
-    juce::Path rib;
-    rib.startNewSubPath (0.f, 0.f);
-    rib.lineTo (0.f, -rad * 0.75f * 0.85f);
-    g.setColour (pal.amber.darker (0.6f).withAlpha (0.7f));
-    g.strokePath (rib, juce::PathStrokeType (1.f), t);
+    // the pointer: a leaf, maple leaf, frost crystal, petal, droplet, blade or crescent, by theme
+    drawKnobPointer (g, style, c, rad, a, pal);
 }
 
 void ScattrLNF::drawButtonBackground (juce::Graphics& g, juce::Button& b, const juce::Colour&, bool over, bool down)
@@ -386,7 +729,7 @@ ScattrPanel::ScattrPanel (ScattrProcessor& p) : proc (p)
 
     struct Def { const char* id; const char* text; int dp; };
     // dp = digits shown under the knob (whole numbers for big ranges, 0.00 style for the small ones)
-    static const Def defs[22] = {
+    static const Def defs[30] = {
         { "size", "seed size", 0 }, { "dens", "rain", 0 }, { "speed", "speed", 2 },
         { "wind", "wind", 2 }, { "spray", "scatter", 2 }, { "hold", "bloom", 2 },
         { "gap", "rest", 2 }, { "amp", "sun", 2 },
@@ -394,7 +737,9 @@ ScattrPanel::ScattrPanel (ScattrProcessor& p) : proc (p)
         { "dnote", "time", -1 }, { "dfb", "feedback", 2 }, { "dmix", "echo mix", 2 },
         { "rsize", "size", 2 }, { "rdamp", "damp", 2 }, { "rmix", "reverb mix", 2 },
         { "mtune", "master tune", 0 }, { "cycle", "cycle", 2 }, { "rand", "random", 2 },
-        { "fmix", "filter mix", 2 }, { "width", "pan spread", 2 }
+        { "fmix", "filter mix", 2 }, { "width", "pan spread", 2 },
+        { "prate", "rate", 2 }, { "pdepth", "depth", 2 }, { "pcenter", "center", 0 }, { "pfb", "feedback", 2 }, { "pmix", "mix", 2 },
+        { "crate", "rate", 2 }, { "cdepth", "depth", 2 }, { "cmix", "mix", 2 }
     };
 
     for (size_t i = 0; i < knobs.size(); ++i)
@@ -470,6 +815,13 @@ ScattrPanel::ScattrPanel (ScattrProcessor& p) : proc (p)
     fonAttach = std::make_unique<juce::AudioProcessorValueTreeState::ButtonAttachment> (proc.apvts, "fon", fonBtn);
     donAttach = std::make_unique<juce::AudioProcessorValueTreeState::ButtonAttachment> (proc.apvts, "don", donBtn);
     ronAttach = std::make_unique<juce::AudioProcessorValueTreeState::ButtonAttachment> (proc.apvts, "ron", ronBtn);
+
+    for (auto* b : { &ponBtn, &conBtn }) addAndMakeVisible (*b);
+    ponAttach = std::make_unique<juce::AudioProcessorValueTreeState::ButtonAttachment> (proc.apvts, "pon", ponBtn);
+    conAttach = std::make_unique<juce::AudioProcessorValueTreeState::ButtonAttachment> (proc.apvts, "con", conBtn);
+
+    eqView = std::make_unique<EqDisplay> (*this, proc);
+    addAndMakeVisible (*eqView);
 
     addAndMakeVisible (scaleBtn);
     scaleBtn.setButtonText (juce::String (juce::roundToInt (proc.editorScale.load() * 100.f)) + "%");
@@ -580,6 +932,7 @@ void ScattrPanel::applyTheme (int idx, bool animate)
 
     fromPal = pal;
     curTheme = idx;
+    lnf.setStyle (idx);
     proc.themeIdx = idx;
     targetPal = Scat::themes()[(size_t) idx].pal;
     themeT = animate ? 0.f : 1.f;
@@ -604,7 +957,8 @@ void ScattrPanel::setTab (int t)
     }
     typeBtn.setVisible (! g);
     spaceBtn.setVisible (! g);
-    for (auto* b : { &fonBtn, &donBtn, &ronBtn }) b->setVisible (! g);
+    for (auto* b : { &fonBtn, &donBtn, &ronBtn, &ponBtn, &conBtn }) b->setVisible (! g);
+    if (eqView != nullptr) eqView->setVisible (! g);
     loadBtn.setVisible (g);
     clearBtn.setVisible (g);
     droneBtn.setVisible (g);
@@ -653,22 +1007,27 @@ void ScattrPanel::resized()
         specBtn.setBounds  (bx, (int) mp.getY() + 100, bw, 26);
     }
 
-    // fx tab: one row per effect, shared 5-column grid
+    // fx tab: the equalizer on top, then two rows of effect cards (see fxPanel() for the geometry)
     {
+        if (eqView != nullptr) eqView->setBounds (eqPanel().toNearestInt());
+
         static const size_t filterKnobs[4] = { 8, 9, 10, 20 };   // cutoff, reso, drive, filter mix
-        for (int k = 0; k < 4; ++k) place (filterKnobs[k], fxPanel (0), 5, k, 94);
-        for (int k = 0; k < 3; ++k) place ((size_t) (11 + k), fxPanel (1), 5, k, 94);   // time, feedback, echo mix
-        for (int k = 0; k < 3; ++k) place ((size_t) (14 + k), fxPanel (2), 5, k, 94);   // size, damp, reverb mix
+        constexpr int knobH = 80;
+        for (int k = 0; k < 4; ++k) place (filterKnobs[k], fxPanel (0), 4, k, knobH);
+        for (int k = 0; k < 5; ++k) place ((size_t) (22 + k), fxPanel (1), 5, k, knobH);   // phaser: rate, depth, center, feedback, mix
+        for (int k = 0; k < 3; ++k) place ((size_t) (27 + k), fxPanel (2), 3, k, knobH);   // chorus: rate, depth, mix
+        for (int k = 0; k < 3; ++k) place ((size_t) (11 + k), fxPanel (3), 3, k, knobH);   // delay: time, feedback, echo mix
+        for (int k = 0; k < 3; ++k) place ((size_t) (14 + k), fxPanel (4), 3, k, knobH);   // reverb: size, damp, reverb mix
 
-        const int sw = (int) ((fxPanel (0).getWidth() - 24.f) / 5.f);
-        auto colX = [&] (int col, int w) { return (int) fxPanel (0).getX() + 12 + col * sw + (sw - w) / 2; };
-        typeBtn.setBounds  (colX (4, 100), (int) fxPanel (0).getY() + 64, 100, 28);
-        spaceBtn.setBounds (colX (4, 100), (int) fxPanel (2).getY() + 64, 100, 28);
-
-        // bypass buttons in each panel's top-right corner
-        fonBtn.setBounds ((int) fxPanel (0).getRight() - 12 - 56, (int) fxPanel (0).getY() + 7, 56, 24);
-        donBtn.setBounds ((int) fxPanel (1).getRight() - 12 - 56, (int) fxPanel (1).getY() + 7, 56, 24);
-        ronBtn.setBounds ((int) fxPanel (2).getRight() - 12 - 56, (int) fxPanel (2).getY() + 7, 56, 24);
+        // each card's on button sits in its top-right corner; the filter mode / reverb space keys sit just left of it
+        auto onBounds = [&] (int card) { return juce::Rectangle<int> ((int) fxPanel (card).getRight() - 12 - 52, (int) fxPanel (card).getY() + 7, 52, 24); };
+        fonBtn.setBounds (onBounds (0));
+        ponBtn.setBounds (onBounds (1));
+        conBtn.setBounds (onBounds (2));
+        donBtn.setBounds (onBounds (3));
+        ronBtn.setBounds (onBounds (4));
+        typeBtn.setBounds  (fonBtn.getX() - 6 - 56, fonBtn.getY(), 56, 24);
+        spaceBtn.setBounds (ronBtn.getX() - 6 - 70, ronBtn.getY(), 70, 24);
     }
 }
 
@@ -853,7 +1212,7 @@ void ScattrPanel::timerCallback()
 
     // on/off buttons glide between their two looks in 0.2 s
     specBtn.setToggleState (proc.apvts.getRawParameterValue ("son")->load() > 0.5f, juce::dontSendNotification);
-    for (auto* b : { &droneBtn, &tuneBtn, &fonBtn, &donBtn, &ronBtn, &specBtn })
+    for (auto* b : { &droneBtn, &tuneBtn, &fonBtn, &donBtn, &ronBtn, &specBtn, &ponBtn, &conBtn })
     {
         const float target = b->getToggleState() ? 1.f : 0.f;
         float v = buttonLit (*b);
@@ -882,7 +1241,7 @@ void ScattrPanel::timerCallback()
     const int fi = juce::jlimit (0, 2, (int) proc.apvts.getRawParameterValue ("ftype")->load());
     if (typeBtn.getButtonText() != ft[fi]) typeBtn.setButtonText (ft[fi]);
 
-    static const char* rt[4] = { "ROOM", "PLATE", "HALL", "CATHEDRAL" };
+    static const char* rt[4] = { "ROOM", "PLATE", "HALL", "CHURCH" };
     const int ri = juce::jlimit (0, 3, (int) proc.apvts.getRawParameterValue ("rtype")->load());
     if (spaceBtn.getButtonText() != rt[ri]) spaceBtn.setButtonText (rt[ri]);
 
@@ -890,11 +1249,16 @@ void ScattrPanel::timerCallback()
     const float aF = 0.4f + 0.6f * smooth01 (buttonLit (fonBtn));
     const float aD = 0.4f + 0.6f * smooth01 (buttonLit (donBtn));
     const float aR = 0.4f + 0.6f * smooth01 (buttonLit (ronBtn));
+    const float aP = 0.4f + 0.6f * smooth01 (buttonLit (ponBtn));
+    const float aC = 0.4f + 0.6f * smooth01 (buttonLit (conBtn));
     for (size_t idx : { (size_t) 8, (size_t) 9, (size_t) 10, (size_t) 20 }) { knobs[idx].slider.setAlpha (aF); knobs[idx].label.setAlpha (aF); }
     for (size_t idx : { (size_t) 11, (size_t) 12, (size_t) 13 })            { knobs[idx].slider.setAlpha (aD); knobs[idx].label.setAlpha (aD); }
     for (size_t idx : { (size_t) 14, (size_t) 15, (size_t) 16 })            { knobs[idx].slider.setAlpha (aR); knobs[idx].label.setAlpha (aR); }
+    for (size_t idx : { (size_t) 22, (size_t) 23, (size_t) 24, (size_t) 25, (size_t) 26 }) { knobs[idx].slider.setAlpha (aP); knobs[idx].label.setAlpha (aP); }
+    for (size_t idx : { (size_t) 27, (size_t) 28, (size_t) 29 })            { knobs[idx].slider.setAlpha (aC); knobs[idx].label.setAlpha (aC); }
     typeBtn.setAlpha (aF);
     spaceBtn.setAlpha (aR);
+    if (tab == 1 && eqView != nullptr) eqView->update();
 
     const int c = proc.uiSample.load();
     playIdx = c;
@@ -932,11 +1296,11 @@ void ScattrPanel::drawVine (juce::Graphics& g)
     const float pi = juce::MathConstants<float>::pi;
 
     // main stem
-    const bool woody = (curTheme >= 1);   // autumn, winter, spring: bare branch
+    const bool woody = (curTheme >= 1 && curTheme <= 3);   // autumn, winter, spring: bare branch
     juce::Path stem;
     stem.startNewSubPath (0.f, yAt (0.f));
     for (float x = 0.f; x <= W; x += 6.f) stem.lineTo (x, yAt (x));
-    g.setColour (curTheme == 2 ? pal.bark.brighter (0.3f) : woody ? pal.bark : pal.grassDark);
+    g.setColour (curTheme == 2 ? pal.bark.brighter (0.3f) : (woody || curTheme == 5 || curTheme == 6) ? pal.bark : pal.grassDark);
     g.strokePath (stem, juce::PathStrokeType (woody ? 2.4f : 1.8f));
 
     int i = 0;
@@ -1035,6 +1399,131 @@ void ScattrPanel::drawVine (juce::Graphics& g)
                 g.setColour (pal.acc.brighter (0.5f).withAlpha (0.9f * (1.f - t * 0.6f)));
                 g.fillPath (p, juce::AffineTransform::rotation (anim * 1.5f + (float) k).translated (fx, fy));
             }
+        case 4:   // meadow: grass tufts, daisies and a butterfly
+            for (float x = 24.f; x < W - 18.f; x += 40.f, ++i)
+            {
+                const float sy = yAt (x), sw = sway (x);
+                g.setColour (pal.grass.withAlpha (0.85f));
+                for (int b = -1; b <= 1; ++b)
+                    g.drawLine (x + (float) b * 3.f, sy, x + (float) b * 5.f + sw * 22.f, sy - 9.f - (b == 0 ? 4.f : 0.f), 1.4f);
+                if (i % 2 == 0)
+                {
+                    const float fx = x + 18.f, fy = yAt (fx);
+                    const float tx = fx + sw * 14.f, ty = fy - 16.f;
+                    g.setColour (pal.grassDark);
+                    g.drawLine (fx, fy, tx, ty, 1.5f);
+                    drawLeaf (g, fx, fy - 5.f, 1.1f + sw, 8.f, pal.grass.withAlpha (0.9f));
+                    drawFlower (g, tx, ty, 6.5f, pal.ink, pal.acc);
+                }
+            }
+            drawButterfly (g, W * (0.06f + 0.88f * std::fmod (anim * 0.018f, 1.f)),
+                           top - 2.f + 7.f * std::sin (anim * 1.1f) + 5.f * std::sin (anim * 2.7f), 6.f, anim * 11.f,
+                           pal.acc.brighter (0.2f), pal.ink);
+            break;
+
+        case 5:   // tide: kelp swaying on the seabed, bubbles rising
+            for (float x = 18.f; x < W - 12.f; x += 34.f, ++i)
+            {
+                const float h = 20.f + 8.f * (float) (i % 3), sw = 5.f * std::sin (anim * 0.9f + x * 0.07f);
+                const juce::Point<float> p0 (x, yAt (x) + 3.f), p1 (x + sw * 0.5f, p0.y - h * 0.5f), p2 (x + sw * 1.6f, p0.y - h);
+                juce::Path strand;
+                strand.startNewSubPath (p0);
+                strand.quadraticTo (p1, p2);
+                g.setColour (pal.grass.withAlpha (0.9f));
+                g.strokePath (strand, juce::PathStrokeType (1.8f));
+                for (float t : { 0.45f, 0.8f })
+                {
+                    const float u = 1.f - t;
+                    const float bx = u * u * p0.x + 2.f * u * t * p1.x + t * t * p2.x;
+                    const float by = u * u * p0.y + 2.f * u * t * p1.y + t * t * p2.y;
+                    drawLeaf (g, bx, by, (t < 0.6f ? 1.0f : -1.0f) + sw * 0.05f, 9.f + 3.f * (1.f - t), pal.grassDark.brighter (0.3f).withAlpha (0.9f));
+                }
+            }
+            for (int k = 0; k < 8; ++k)
+            {
+                const float t = std::fmod (anim * 0.07f + (float) k * 0.125f, 1.f);
+                const float bx = W * (0.05f + 0.12f * (float) k) + 8.f * std::sin (anim * 1.1f + (float) k * 2.f);
+                drawBubble (g, bx, y0 - t * (y0 - top + 18.f), 2.f + (float) (k % 3), pal.glow, 1.f - t * 0.6f);
+            }
+            break;
+
+        case 6:   // dune: cacti, agave and the odd desert bloom
+            for (float x = 24.f; x < W - 18.f; x += 44.f, ++i)
+            {
+                const float sy = yAt (x);
+                if (i % 3 == 0)
+                    drawCactus (g, x, sy, 16.f + 4.f * (float) (i % 2), pal.grassDark.brighter (0.15f), pal.acc);
+                else if (i % 3 == 1)
+                    for (int b = -2; b <= 2; ++b)
+                        drawLeaf (g, x, sy, (float) b * 0.45f + sway (x), 12.f - (float) std::abs (b) * 1.5f, pal.grass.withAlpha (0.9f));
+                else
+                {
+                    const float tx = x + sway (x) * 12.f, ty = sy - 14.f;
+                    g.setColour (pal.grassDark);
+                    g.drawLine (x, sy, tx, ty, 1.4f);
+                    drawFlower (g, tx, ty, 5.f, pal.amber, pal.accDark);
+                }
+            }
+            break;
+
+        case 7:   // moonlit: ferns and drifting fireflies
+            for (float x = 22.f; x < W - 14.f; x += 44.f, ++i)
+                drawFern (g, x, yAt (x), 24.f + 3.f * (float) (i % 3), (i % 2 == 0) ? 1.f : -1.f, pal.grassDark.brighter (0.2f), sway (x));
+            for (int k = 0; k < 9; ++k)
+            {
+                const float fx = W * (0.05f + 0.11f * (float) k) + 22.f * std::sin (anim * 0.5f + (float) k * 1.7f);
+                const float fy = top + (y0 - top) * 0.3f + 12.f * std::sin (anim * 0.7f + (float) k * 2.3f) - 6.f;
+                const float pulse = 0.5f + 0.5f * std::sin (anim * 1.7f + (float) k * 2.1f);
+                g.setGradientFill (juce::ColourGradient (pal.acc.withAlpha (0.6f * pulse), fx, fy, pal.acc.withAlpha (0.f), fx + 9.f, fy, true));
+                g.fillEllipse (fx - 9.f, fy - 9.f, 18.f, 18.f);
+                g.setColour (juce::Colours::white.withAlpha (0.35f + 0.5f * pulse));
+                g.fillEllipse (fx - 1.2f, fy - 1.2f, 2.4f, 2.4f);
+            }
+            break;
+
+        case 8:   // rain: big wet leaves with dewdrops, and rain falling into the vine
+            for (float x = 26.f; x < W - 20.f; x += 48.f, ++i)
+            {
+                const float ang = ((i % 2 == 0) ? 1.05f : -1.05f) + sway (x);
+                const float size = 24.f + 2.f * (float) (i % 3);
+                drawLeaf (g, x, yAt (x), ang, size, (i % 2 == 0 ? pal.grass : pal.grassDark.brighter (0.3f)).withAlpha (0.92f));
+                drawDew (g, x + std::sin (ang) * size, yAt (x) - std::cos (ang) * size + 4.f, 2.3f, pal.glow);
+            }
+            for (int k = 0; k < 10; ++k)
+            {
+                const float t = std::fmod (anim * 0.5f + (float) k * 0.1f, 1.f);
+                const float rx = W * (0.04f + 0.098f * (float) k);
+                if (t < 0.9f)
+                {
+                    const float ry = top - 10.f + t * (y0 - top + 10.f);
+                    g.setColour (pal.ink.withAlpha (0.5f * (1.f - t * 0.4f)));
+                    g.drawLine (rx, ry, rx - 1.6f, ry + 7.f, 1.1f);
+                }
+                else
+                {
+                    const float u = (t - 0.9f) / 0.1f;   // a ripple spreads where the drop lands
+                    g.setColour (pal.glow.withAlpha (0.55f * (1.f - u)));
+                    g.drawEllipse (rx - 2.f - 6.f * u, y0 - 1.f - 1.5f * u, 4.f + 12.f * u, 3.f * u + 1.f, 0.9f);
+                }
+            }
+            break;
+
+        case 9:   // lavender: sprigs and drifting petals
+            for (float x = 20.f; x < W - 12.f; x += 28.f, ++i)
+            {
+                const float sy = yAt (x);
+                drawLavenderSprig (g, x, sy, 20.f + 3.f * (float) (i % 3), sway (x) * 40.f + ((i % 2 == 0) ? 2.f : -2.f), pal.grassDark, pal.acc);
+                if (i % 3 == 0) drawLeaf (g, x, sy, ((i % 2 == 0) ? 1.0f : -1.0f) + sway (x), 9.f, pal.grass.withAlpha (0.85f));
+            }
+            for (int k = 0; k < 6; ++k)
+            {
+                const float t = std::fmod (anim * 0.05f + (float) k * 0.167f, 1.f);
+                const float fx = W * (0.08f + 0.16f * (float) k) + 20.f * std::sin (anim * 0.8f + (float) k * 2.3f);
+                juce::Path p;
+                p.addEllipse (-3.f, -1.6f, 6.f, 3.2f);
+                g.setColour (pal.acc.brighter (0.4f).withAlpha (0.85f * (1.f - t * 0.6f)));
+                g.fillPath (p, juce::AffineTransform::rotation (anim * 1.3f + (float) k).translated (fx, top + t * (y0 - top - 3.f)));
+            }
             break;
     }
 }
@@ -1080,6 +1569,20 @@ void ScattrPanel::paintAtmosphere (juce::Graphics& g)
         p.closeSubPath();
         g.setGradientFill (juce::ColourGradient (c.withAlpha (alpha * 0.65f), 0.f, 0.f, c.withAlpha (0.f), 0.f, H * 0.85f, false));
         g.fillPath (p);
+    };
+
+    auto wave = [&] (float y0, float amp, float freq, float phase, float thick, juce::Colour c, float alpha)
+    {
+        juce::Path p;
+        bool first = true;
+        for (float x = -10.f; x <= W + 10.f; x += 10.f)
+        {
+            const float y = y0 + amp * std::sin (x * freq + phase) + amp * 0.4f * std::sin (x * freq * 2.3f + phase * 1.7f);
+            if (first) { p.startNewSubPath (x, y); first = false; }
+            else         p.lineTo (x, y);
+        }
+        g.setColour (c.withAlpha (alpha));
+        g.strokePath (p, juce::PathStrokeType (thick, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
     };
 
     switch (curTheme)
@@ -1130,19 +1633,104 @@ void ScattrPanel::paintAtmosphere (juce::Graphics& g)
         case 3:   // spring: wide, soft morning light
             shaft (W * 0.46f, 110.f, -220.f, 0.05f, pal.glow);
             shaft (W * 0.64f,  70.f, -250.f, 0.07f, pal.glow);
-            shaft (W * 0.80f, 130.f, -300.f, 0.06f, pal.amber);
+        case 4:   // meadow: high, clear light and a haze over the grass
+            shaft (W * 0.44f, 120.f, -200.f, 0.05f, pal.glow);
+            shaft (W * 0.62f,  80.f, -240.f, 0.07f, pal.glow);
+            shaft (W * 0.78f, 140.f, -290.f, 0.05f, pal.amber);
+            {
+                juce::ColourGradient hz (pal.glow.withAlpha (0.10f), W * 0.5f, H + 20.f, pal.glow.withAlpha (0.f), W * 0.5f, H - 320.f, true);
+                g.setGradientFill (hz);
+                g.fillRect (0.f, 0.f, W, H);
+            }
+            break;
+
+        case 5:   // tide: light falling through water, with faint caustic ribbons
+            shaft (W * 0.40f,  70.f, -160.f, 0.08f, pal.glow);
+            shaft (W * 0.58f, 120.f, -200.f, 0.07f, pal.glow);
+            shaft (W * 0.78f,  60.f, -230.f, 0.06f, pal.glow);
+            for (int k = 0; k < 4; ++k)
+                wave (30.f + 34.f * (float) k, 9.f + 2.f * (float) k, 0.010f + 0.003f * (float) k, (float) k * 1.7f,
+                      18.f + 6.f * (float) k, pal.glow, 0.035f);
+            break;
+
+        case 6:   // dune: a low sun on the horizon and layered ridges of sand
+        {
+            juce::ColourGradient sunLow (pal.glow.withAlpha (0.26f), W * 0.30f, H - 90.f, pal.glow.withAlpha (0.f), W * 0.30f, H - 390.f, true);
+            g.setGradientFill (sunLow);
+            g.fillRect (0.f, 0.f, W, H);
+            for (int k = 0; k < 3; ++k)
+            {
+                juce::Path ridge;
+                const float yb = H - 120.f + 36.f * (float) k;
+                ridge.startNewSubPath (0.f, H);
+                for (float x = 0.f; x <= W; x += 8.f)
+                    ridge.lineTo (x, yb + 16.f * std::sin (x * 0.006f + (float) k * 2.3f) + 7.f * std::sin (x * 0.017f + (float) k));
+                ridge.lineTo (W, H);
+                ridge.closeSubPath();
+                g.setColour (black.withAlpha (0.07f + 0.05f * (float) k));
+                g.fillPath (ridge);
+            }
+            shaft (W * 0.66f, 100.f, -260.f, 0.05f, pal.acc);
+            break;
+        }
+
+        case 7:   // moonlit: a moon, a scatter of stars and a pale beam
+        {
+            const float mx = W * 0.84f, my = 66.f;
+            juce::ColourGradient halo (pal.glow.withAlpha (0.30f), mx, my, pal.glow.withAlpha (0.f), mx + 150.f, my, true);
+            g.setGradientFill (halo);
+            g.fillEllipse (mx - 150.f, my - 150.f, 300.f, 300.f);
+            g.setColour (pal.amber.withAlpha (0.88f));
+            g.fillEllipse (mx - 20.f, my - 20.f, 40.f, 40.f);
+            g.setColour (pal.bgMid.withAlpha (0.20f));
+            g.fillEllipse (mx - 8.f, my - 6.f, 11.f, 11.f);
+            g.fillEllipse (mx + 5.f, my + 6.f, 7.f, 7.f);
+            for (int k = 0; k < 30; ++k)
+            {
+                const float sx = std::fmod ((float) k * 0.6180339f, 1.f) * W, sy = std::fmod ((float) k * 0.4142f, 1.f) * H * 0.42f;
+                const float sr = 0.7f + 0.9f * std::fmod ((float) k * 0.73f, 1.f);
+                g.setColour (juce::Colours::white.withAlpha (0.14f + 0.22f * std::fmod ((float) k * 0.37f, 1.f)));
+                g.fillEllipse (sx - sr, sy - sr, sr * 2.f, sr * 2.f);
+            }
+            shaft (W * 0.70f, 90.f, -250.f, 0.05f, pal.glow);
+            break;
+        }
+
+        case 8:   // rain: mist hanging off the top and fine slanting rain
+        {
+            juce::ColourGradient mist (pal.glow.withAlpha (0.14f), 0.f, 0.f, pal.glow.withAlpha (0.f), 0.f, 260.f, false);
+            g.setGradientFill (mist);
+            g.fillRect (0.f, 0.f, W, 260.f);
+            g.setColour (pal.ink.withAlpha (0.045f));
+            for (int k = 0; k < 90; ++k)
+            {
+                const float rx = std::fmod ((float) k * 0.7548777f, 1.f) * (W + 80.f) - 20.f, ry = std::fmod ((float) k * 0.3819f, 1.f) * H;
+                g.drawLine (rx, ry, rx - 6.f, ry + 16.f + 12.f * std::fmod ((float) k * 0.31f, 1.f), 1.f);
+            }
+            break;
+        }
+
+        case 9:   // lavender: a warm band of dusk light over the field
+            shaft (W * 0.48f, 100.f, -230.f, 0.06f, pal.amber);
+            shaft (W * 0.68f,  60.f, -260.f, 0.08f, pal.glow);
+            shaft (W * 0.84f, 120.f, -300.f, 0.06f, pal.acc);
+            {
+                juce::ColourGradient hz (pal.acc.withAlpha (0.14f), W * 0.5f, H + 10.f, pal.acc.withAlpha (0.f), W * 0.5f, H - 280.f, true);
+                g.setGradientFill (hz);
+                g.fillRect (0.f, 0.f, W, H);
+            }
             break;
     }
 
     {   // vignette
-        juce::ColourGradient vg (black.withAlpha (0.f), W * 0.5f, H * 0.46f, black.withAlpha (0.40f), 0.f, 0.f, true);
+        juce::ColourGradient vg (black.withAlpha (0.f), W * 0.5f, H * 0.46f, black.withAlpha (0.26f), 0.f, 0.f, true);
         vg.addColour (0.55, black.withAlpha (0.f));
-        vg.addColour (0.80, black.withAlpha (0.22f));
+        vg.addColour (0.80, black.withAlpha (0.13f));
         g.setGradientFill (vg);
         g.fillRect (0.f, 0.f, W, H);
     }
     {   // mist along the bottom, lit from within
-        g.setGradientFill (juce::ColourGradient (black.withAlpha (0.f), 0.f, H - 130.f, black.withAlpha (0.42f), 0.f, H, false));
+        g.setGradientFill (juce::ColourGradient (black.withAlpha (0.f), 0.f, H - 130.f, black.withAlpha (0.28f), 0.f, H, false));
         g.fillRect (0.f, H - 130.f, W, 130.f);
         juce::ColourGradient gl (pal.glow.withAlpha (0.06f), W * 0.5f, H, pal.glow.withAlpha (0.f), W * 0.5f, H - 150.f, true);
         g.setGradientFill (gl);
@@ -1232,6 +1820,53 @@ void ScattrPanel::paintIdleDrift (juce::Graphics& g, juce::Rectangle<float> area
                 g.fillPath (p, juce::AffineTransform::rotation (rot).translated (x, y));
                 break;
             }
+
+            case 4:   // meadow: grass blades and white petals
+                if (k % 2 == 0)
+                    drawLeaf (g, x, y, rot, 8.f + 4.f * depth, pal.grass.withAlpha (a));
+                else
+                {
+                    juce::Path p;
+                    p.addEllipse (-3.f * depth, -1.8f * depth, 6.f * depth, 3.6f * depth);
+                    g.setColour (pal.ink.withAlpha (a));
+                    g.fillPath (p, juce::AffineTransform::rotation (rot).translated (x, y));
+                }
+                break;
+
+            case 5:   // tide: bubbles rising
+                drawBubble (g, x, area.getBottom() - (y - area.getY()), 2.f + 3.f * depth, pal.glow, a);
+                break;
+
+            case 6:   // dune: wind-blown sand
+                g.setColour (pal.amber.withAlpha (a * 0.8f));
+                g.fillEllipse (x - 1.2f * depth, y - 1.2f * depth, 2.4f * depth, 2.4f * depth);
+                if (k % 5 == 0) g.drawLine (x, y, x + 14.f * depth, y + 1.5f, 1.f);
+                break;
+
+            case 7:   // moonlit: fireflies
+            {
+                const float fy = area.getY() + area.getHeight() * (0.2f + 0.6f * baseX) + 8.f * std::sin (anim * 0.9f + (float) k);
+                const float pulse = 0.5f + 0.5f * std::sin (anim * 1.6f + (float) k * 2.1f);
+                g.setGradientFill (juce::ColourGradient (pal.acc.withAlpha (0.6f * idleFade * pulse), x, fy, pal.acc.withAlpha (0.f), x + 8.f, fy, true));
+                g.fillEllipse (x - 8.f, fy - 8.f, 16.f, 16.f);
+                g.setColour (juce::Colours::white.withAlpha (0.8f * idleFade * pulse));
+                g.fillEllipse (x - 1.2f, fy - 1.2f, 2.4f, 2.4f);
+                break;
+            }
+
+            case 8:   // rain: streaks
+                g.setColour (pal.glow.withAlpha (a * 0.9f));
+                g.drawLine (x, y, x - 2.f, y + 8.f + 4.f * depth, 1.1f);
+                break;
+
+            case 9:   // lavender: petals
+            {
+                juce::Path p;
+                p.addEllipse (-3.5f * depth, -1.8f * depth, 7.f * depth, 3.6f * depth);
+                g.setColour (pal.acc.brighter (0.4f).withAlpha (a));
+                g.fillPath (p, juce::AffineTransform::rotation (rot).translated (x, y));
+                break;
+            }
         }
     }
 }
@@ -1254,7 +1889,7 @@ void ScattrPanel::drawGlass (juce::Graphics& g, juce::Rectangle<float> r, float 
         outside.setUsingNonZeroWinding (false);   // even-odd: everything except the card itself
         g.reduceClipRegion (outside);
 
-        juce::DropShadow (black.withAlpha (0.42f), 12, juce::Point<int> (0, 5)).drawForPath (g, card);
+        juce::DropShadow (black.withAlpha (0.28f), 12, juce::Point<int> (0, 5)).drawForPath (g, card);
         juce::DropShadow (pal.glow.withAlpha (inset ? 0.08f : 0.15f), inset ? 10 : 18, juce::Point<int> (0, 0)).drawForPath (g, card);
     }
 
@@ -1267,7 +1902,7 @@ void ScattrPanel::drawGlass (juce::Graphics& g, juce::Rectangle<float> r, float 
 
         if (inset)   // recessed: shadow falling from the top edge
         {
-            g.setGradientFill (juce::ColourGradient (black.withAlpha (0.45f), 0.f, r.getY(),
+            g.setGradientFill (juce::ColourGradient (black.withAlpha (0.30f), 0.f, r.getY(),
                                                      black.withAlpha (0.f), 0.f, r.getY() + 16.f, false));
             g.fillRect (r.withHeight (16.f));
         }
@@ -1289,7 +1924,7 @@ void ScattrPanel::drawGlass (juce::Graphics& g, juce::Rectangle<float> r, float 
         g.fillRect (r);
     }
 
-    juce::ColourGradient rim (white.withAlpha (inset ? 0.08f : 0.24f), 0.f, r.getY(),
+    juce::ColourGradient rim (white.withAlpha (inset ? 0.07f : 0.17f), 0.f, r.getY(),
                               pal.glow.withAlpha (0.15f), 0.f, r.getBottom(), false);
     rim.addColour (0.5, pal.acc.withAlpha (0.12f));
     g.setGradientFill (rim);
@@ -1304,7 +1939,7 @@ void ScattrPanel::drawGlass (juce::Graphics& g, juce::Rectangle<float> r, float 
 
 void ScattrPanel::drawGroup (juce::Graphics& g, juce::Rectangle<float> r)
 {
-    drawGlass (g, r, 12.f, 0.50f);
+    drawGlass (g, r, 12.f, 0.44f);
 }
 
 void ScattrPanel::drawGroupTitle (juce::Graphics& g, juce::Rectangle<float> r, const juce::String& title)
@@ -1489,7 +2124,8 @@ void ScattrPanel::paintStatic (juce::Graphics& g)
     }
     else
     {
-        for (int k = 0; k < 3; ++k) drawGroup (g, fxPanel (k));
+        drawGlass (g, eqPanel(), 12.f, 0.62f, true);
+        for (int k = 0; k < 5; ++k) drawGroup (g, fxPanel (k));
     }
 }
 
@@ -1514,7 +2150,7 @@ void ScattrPanel::rebuildCache()
 void ScattrPanel::paintMotes (juce::Graphics& g)
 {
     const float W = (float) baseW, H = (float) baseH;
-    const bool falls = (curTheme == 2 || curTheme == 3);
+    const bool falls = (curTheme == 2 || curTheme == 3 || curTheme == 8);
     const float pi = juce::MathConstants<float>::pi;
 
     for (int k = 0; k < 16; ++k)
@@ -1538,11 +2174,11 @@ void ScattrPanel::paintMotes (juce::Graphics& g)
 // A thin highlight that slowly travels along the top edge of every card, then rests for a while
 void ScattrPanel::paintGlints (juce::Graphics& g)
 {
-    juce::Rectangle<float> cards[5];
+    juce::Rectangle<float> cards[8];
     int n = 0;
     cards[n++] = eqRect();
     if (tab == 0) { cards[n++] = waveRect(); cards[n++] = sampleRect(); cards[n++] = grainPanel(); cards[n++] = motionPanel(); }
-    else          { cards[n++] = fxPanel (0); cards[n++] = fxPanel (1); cards[n++] = fxPanel (2); }
+    else          { cards[n++] = eqPanel(); for (int k = 0; k < 5; ++k) cards[n++] = fxPanel (k); }
 
     for (int i = 0; i < n; ++i)
     {
@@ -1578,15 +2214,12 @@ void ScattrPanel::paintLabels (juce::Graphics& g)
     }
     else
     {
+        drawGroupTitle (g, eqPanel(),  "clearing: equalizer");
         drawGroupTitle (g, fxPanel (0), "canopy: filter");
-        drawGroupTitle (g, fxPanel (1), "canyon: delay");
-        drawGroupTitle (g, fxPanel (2), "cavern: reverb");
-
-        const int sw = (int) ((fxPanel (0).getWidth() - 24.f) / 5.f);
-        g.setColour (pal.dim);
-        g.setFont (serif (14.f, true));
-        g.drawText ("mode",  (int) fxPanel (0).getX() + 12 + 4 * sw, (int) fxPanel (0).getY() + 40, sw, 16, juce::Justification::centred);
-        g.drawText ("space", (int) fxPanel (2).getX() + 12 + 4 * sw, (int) fxPanel (2).getY() + 40, sw, 16, juce::Justification::centred);
+        drawGroupTitle (g, fxPanel (1), "ripple: phaser");
+        drawGroupTitle (g, fxPanel (2), "birdsong: chorus");
+        drawGroupTitle (g, fxPanel (3), "canyon: delay");
+        drawGroupTitle (g, fxPanel (4), "cavern: reverb");
     }
 }
 
@@ -1697,7 +2330,7 @@ void ScattrPanel::paintKnobGlows (juce::Graphics& g)
 {
     const float a0 = juce::MathConstants<float>::pi * 1.25f, a1 = juce::MathConstants<float>::pi * 2.75f;
 
-    std::array<juce::Slider*, 22> all {};
+    std::array<juce::Slider*, 30> all {};
     for (size_t i = 0; i < knobs.size(); ++i) all[i] = &knobs[i].slider;
 
     for (auto* sp : all)
@@ -1734,7 +2367,7 @@ void ScattrPanel::paintKnobGlows (juce::Graphics& g)
 // The wider glow behind an on/off button. It swells as the button switches (see drawKeyBody for the key itself).
 void ScattrPanel::paintToggleGlows (juce::Graphics& g)
 {
-    for (auto* b : { &droneBtn, &tuneBtn, &fonBtn, &donBtn, &ronBtn, &specBtn })
+    for (auto* b : { &droneBtn, &tuneBtn, &fonBtn, &donBtn, &ronBtn, &specBtn, &ponBtn, &conBtn })
     {
         if (! b->isVisible()) continue;
 
@@ -1762,13 +2395,19 @@ int ScattrPanel::hoveredControl() const
         if (knobs[i].slider.isVisible() && (knobs[i].slider.isMouseOver (true) || knobs[i].label.isMouseOver (false)))
             return (int) i;
 
-    if (specBtn.isVisible() && specBtn.isMouseOver (true))
-        return 29;
-
     const juce::Component* extra[7] = { &droneBtn, &tuneBtn, &typeBtn, &spaceBtn, &fonBtn, &donBtn, &ronBtn };
     for (int k = 0; k < 7; ++k)
         if (extra[k]->isVisible() && extra[k]->isMouseOver (true))
-            return 22 + k;
+            return 30 + k;
+
+    if (specBtn.isVisible() && specBtn.isMouseOver (true)) return 37;
+    if (ponBtn.isVisible() && ponBtn.isMouseOver (true))   return 38;
+    if (conBtn.isVisible() && conBtn.isMouseOver (true))   return 39;
+    if (eqView != nullptr && eqView->isVisible())
+    {
+        if (eqView->preBtn.isMouseOver (true)) return 41;
+        if (eqView->isMouseOver (true))        return 40;
+    }
 
     return -1;
 }
@@ -1776,7 +2415,7 @@ int ScattrPanel::hoveredControl() const
 // A small field note that rises into the footer, clear of every control
 void ScattrPanel::paintTip (juce::Graphics& g)
 {
-    if (tipAlpha < 0.01f || tipId < 0 || tipId >= 30) return;
+    if (tipAlpha < 0.01f || tipId < 0 || tipId >= 42) return;
 
     const float a = smooth01 (tipAlpha);
     const auto black = juce::Colours::black;
@@ -1853,6 +2492,529 @@ void ScattrPanel::paint (juce::Graphics& g)
     paintTip (g);
 }
 
+// ---------------------------------------------------------------- equalizer display
+
+namespace
+{
+constexpr float kSpecMin = -96.f, kSpecMax = -6.f;   // what the spectrum's vertical extent shows (dB)
+constexpr float kPlotDb = EqCore::maxGainDb;         // the plot shows +-18 dB of EQ gain
+
+juce::String hzText (float hz)
+{
+    return hz >= 1000.f ? juce::String (hz / 1000.f, hz >= 10000.f ? 1 : 2) + " kHz" : juce::String (juce::roundToInt (hz)) + " Hz";
+}
+}
+
+EqDisplay::EqDisplay (ScattrPanel& pn, ScattrProcessor& pr) : panel (pn), proc (pr)
+{
+    for (int i = 0; i < EqCore::numBands; ++i)
+    {
+        const juce::String id ("eq" + juce::String (i));
+        bp[(size_t) i].on   = proc.apvts.getParameter (id + "on");
+        bp[(size_t) i].type = proc.apvts.getParameter (id + "ty");
+        bp[(size_t) i].freq = proc.apvts.getParameter (id + "f");
+        bp[(size_t) i].gain = proc.apvts.getParameter (id + "g");
+        bp[(size_t) i].q    = proc.apvts.getParameter (id + "q");
+    }
+
+    addAndMakeVisible (preBtn);
+    preBtn.getProperties().set ("fontSize", 11.0);
+    preBtn.setMouseCursor (juce::MouseCursor::PointingHandCursor);
+}
+
+void EqDisplay::resized()
+{
+    preBtn.setBounds (getWidth() - 36 - 46, 5, 46, 20);
+}
+
+float EqDisplay::xOfHz (float hz) const
+{
+    const auto p = plot();
+    return p.getX() + std::log (juce::jmax (hz, 1.f) / EqCore::minHz) / std::log (EqCore::maxHz / EqCore::minHz) * p.getWidth();
+}
+
+float EqDisplay::hzOfX (float x) const
+{
+    const auto p = plot();
+    const float t = juce::jlimit (0.f, 1.f, (x - p.getX()) / p.getWidth());
+    return EqCore::minHz * std::pow (EqCore::maxHz / EqCore::minHz, t);
+}
+
+float EqDisplay::yOfDb (float db) const
+{
+    const auto p = plot();
+    return p.getCentreY() - db / kPlotDb * p.getHeight() * 0.5f;
+}
+
+float EqDisplay::dbOfY (float y) const
+{
+    const auto p = plot();
+    return (p.getCentreY() - y) / (p.getHeight() * 0.5f) * kPlotDb;
+}
+
+EqCore::Band EqDisplay::readBand (int i) const
+{
+    const auto& b = bp[(size_t) i];
+    EqCore::Band r;
+    r.on     = b.on->getValue() > 0.5f;
+    r.type   = juce::jlimit (0, EqCore::numTypes - 1, juce::roundToInt (b.type->convertFrom0to1 (b.type->getValue())));
+    r.freq   = b.freq->convertFrom0to1 (b.freq->getValue());
+    r.gainDb = b.gain->convertFrom0to1 (b.gain->getValue());
+    r.q      = b.q->convertFrom0to1 (b.q->getValue());
+    return r;
+}
+
+juce::Point<float> EqDisplay::nodePos (int i) const
+{
+    const auto b = readBand (i);
+    return { xOfHz (b.freq), yOfDb (EqCore::usesGain (b.type) ? b.gainDb : 0.f) };
+}
+
+int EqDisplay::hitBand (juce::Point<float> p) const
+{
+    int best = -1;
+    float bestD = 12.f * 12.f;
+    for (int i = 0; i < EqCore::numBands; ++i)
+    {
+        if (! readBand (i).on) continue;
+        const auto n = nodePos (i);
+        const float d = (n.x - p.x) * (n.x - p.x) + (n.y - p.y) * (n.y - p.y);
+        if (d <= bestD) { bestD = d; best = i; }
+    }
+    return best;
+}
+
+juce::Colour EqDisplay::bandColour (int i)
+{
+    return juce::Colour::fromHSV (std::fmod (0.58f + 0.125f * (float) i, 1.f), 0.42f, 0.98f, 1.f);   // soft pastels around the wheel
+}
+
+void EqDisplay::setNorm (juce::RangedAudioParameter* p, float plainValue)
+{
+    p->setValueNotifyingHost (p->convertTo0to1 (plainValue));
+}
+
+void EqDisplay::beginGesture (int band)
+{
+    bp[(size_t) band].freq->beginChangeGesture();
+    bp[(size_t) band].gain->beginChangeGesture();
+}
+
+void EqDisplay::endGesture()
+{
+    if (selected < 0) return;
+    bp[(size_t) selected].freq->endChangeGesture();
+    bp[(size_t) selected].gain->endChangeGesture();
+}
+
+void EqDisplay::addBandAt (juce::Point<float> p)
+{
+    for (int i = 0; i < EqCore::numBands; ++i)
+    {
+        if (readBand (i).on) continue;
+
+        auto put = [this] (juce::RangedAudioParameter* par, float v)
+        {
+            par->beginChangeGesture();
+            setNorm (par, v);
+            par->endChangeGesture();
+        };
+        put (bp[(size_t) i].type, (float) EqCore::Bell);
+        put (bp[(size_t) i].freq, hzOfX (p.x));
+        put (bp[(size_t) i].gain, juce::jlimit (-kPlotDb, kPlotDb, dbOfY (p.y)));
+        put (bp[(size_t) i].q, 1.f);
+        put (bp[(size_t) i].on, 1.f);
+        selected = i;
+        return;
+    }
+}
+
+void EqDisplay::removeBand (int i)
+{
+    for (auto* par : { bp[(size_t) i].on, bp[(size_t) i].gain })
+    {
+        par->beginChangeGesture();
+        setNorm (par, 0.f);
+        par->endChangeGesture();
+    }
+    if (selected == i) selected = -1;
+    if (hover == i) hover = -1;
+}
+
+void EqDisplay::showTypeMenu (int i)
+{
+    juce::PopupMenu m;
+    const int cur = readBand (i).type;
+    for (int t = 0; t < EqCore::numTypes; ++t) m.addItem (t + 1, EqCore::typeName (t), true, t == cur);
+    m.addSeparator();
+    m.addItem (100, "Remove band");
+
+    juce::Component::SafePointer<EqDisplay> safe (this);
+    m.showMenuAsync (juce::PopupMenu::Options(), [safe, i] (int result)
+    {
+        if (safe == nullptr || result <= 0) return;
+        if (result == 100) { safe->removeBand (i); return; }
+        auto* par = safe->bp[(size_t) i].type;
+        par->beginChangeGesture();
+        safe->setNorm (par, (float) (result - 1));
+        par->endChangeGesture();
+    });
+}
+
+void EqDisplay::mouseMove (const juce::MouseEvent& e)
+{
+    hover = hitBand (e.position);
+    hoverPt = e.position;
+    setMouseCursor (hover >= 0 ? juce::MouseCursor::PointingHandCursor : juce::MouseCursor::NormalCursor);
+}
+
+void EqDisplay::mouseExit (const juce::MouseEvent&)
+{
+    hover = -1;
+}
+
+void EqDisplay::mouseDown (const juce::MouseEvent& e)
+{
+    const int hit = hitBand (e.position);
+    if (e.mods.isPopupMenu())
+    {
+        if (hit >= 0) { selected = hit; showTypeMenu (hit); }
+        return;
+    }
+    if (hit < 0) { selected = -1; return; }
+
+    selected = hit;
+    dragging = true;
+    beginGesture (hit);
+}
+
+void EqDisplay::mouseDrag (const juce::MouseEvent& e)
+{
+    if (! dragging || selected < 0) return;
+
+    const auto b = readBand (selected);
+    setNorm (bp[(size_t) selected].freq, hzOfX (e.position.x));
+    if (EqCore::usesGain (b.type))
+        setNorm (bp[(size_t) selected].gain, juce::jlimit (-kPlotDb, kPlotDb, dbOfY (e.position.y)));
+}
+
+void EqDisplay::mouseUp (const juce::MouseEvent&)
+{
+    if (dragging) endGesture();
+    dragging = false;
+}
+
+void EqDisplay::mouseDoubleClick (const juce::MouseEvent& e)
+{
+    const int hit = hitBand (e.position);
+    if (hit >= 0) removeBand (hit);
+    else if (plot().expanded (6.f).contains (e.position)) addBandAt (e.position);
+}
+
+void EqDisplay::mouseWheelMove (const juce::MouseEvent& e, const juce::MouseWheelDetails& w)
+{
+    const int b = dragging ? selected : hitBand (e.position);
+    if (b < 0) { Component::mouseWheelMove (e, w); return; }
+
+    auto* par = bp[(size_t) b].q;
+    const float q = juce::jlimit (0.1f, 18.f, readBand (b).q * std::exp (w.deltaY * 2.5f));   // scroll up = narrower
+    par->beginChangeGesture();
+    setNorm (par, q);
+    par->endChangeGesture();
+    selected = b;
+}
+
+// ---- the spectrum
+
+void EqDisplay::computeSpectrum (const std::atomic<float>* ring, std::vector<float>& raw, std::vector<float>& sm, bool stale)
+{
+    const int cols = (int) sm.size();
+    if (! stale)
+    {
+        const int w = proc.eqTapW.load (std::memory_order_acquire);
+        for (int i = 0; i < 4096; ++i)
+            fftData[(size_t) i] = ring[(w - 4096 + i) & (ScattrProcessor::eqTapSize - 1)].load (std::memory_order_relaxed);
+        std::fill (fftData.begin() + 4096, fftData.end(), 0.f);
+        window.multiplyWithWindowingTable (fftData.data(), 4096);
+        fft.performFrequencyOnlyForwardTransform (fftData.data());
+
+        const float binHz = juce::jmax (1.f, proc.uiSampleRate.load()) / 4096.f;
+        const float ratio = EqCore::maxHz / EqCore::minHz;
+        for (int c = 0; c < cols; ++c)
+        {
+            const float f0 = EqCore::minHz * std::pow (ratio, (float) c / (float) cols);
+            const float f1 = EqCore::minHz * std::pow (ratio, (float) (c + 1) / (float) cols);
+            const float b0 = f0 / binHz, b1 = f1 / binHz;
+            float m = 0.f;
+            if (b1 - b0 < 1.f)   // a narrow column: interpolate between the two nearest bins
+            {
+                const float bc = 0.5f * (b0 + b1);
+                const int i0 = juce::jlimit (0, 2045, (int) bc);
+                const float fr = bc - (float) i0;
+                m = fftData[(size_t) i0] * (1.f - fr) + fftData[(size_t) i0 + 1] * fr;
+            }
+            else
+                for (int b = (int) std::ceil (b0); b <= juce::jmin (2046, (int) std::floor (b1)); ++b)
+                    m = juce::jmax (m, fftData[(size_t) b]);
+
+            const float amp = m * 4.f / 4096.f;   // 0 dB = a full-scale sine
+            raw[(size_t) c] = 20.f * std::log10 (amp + 1.0e-9f) + 4.5f * std::log2 (std::sqrt (f0 * f1) / 1000.f);   // 4.5 dB/oct tilt, like most analyzers
+        }
+    }
+    else
+        std::fill (raw.begin(), raw.end(), kSpecMin);
+
+    for (int c = 0; c < cols; ++c)   // fast attack, slow release
+    {
+        const float t = raw[(size_t) c], s = sm[(size_t) c];
+        sm[(size_t) c] = t > s ? s + (t - s) * 0.55f : s + (t - s) * 0.10f;
+    }
+}
+
+void EqDisplay::update()
+{
+    if (! isVisible()) return;
+
+    const int cols = juce::jmax (8, (int) (plot().getWidth() / 2.f));
+    if ((int) specPost.size() != cols)
+    {
+        specPost.assign ((size_t) cols, kSpecMin);  specPre.assign ((size_t) cols, kSpecMin);
+        rawPost.assign ((size_t) cols, kSpecMin);   rawPre.assign ((size_t) cols, kSpecMin);
+    }
+
+    const int w = proc.eqTapW.load (std::memory_order_acquire);
+    staleTicks = (w == lastTapW) ? staleTicks + 1 : 0;   // the host stopped calling the plugin: let the spectrum settle
+    lastTapW = w;
+    const bool stale = staleTicks > 3;
+
+    computeSpectrum (proc.eqPostBuf, rawPost, specPost, stale);
+    if (preBtn.getToggleState()) computeSpectrum (proc.eqPreBuf, rawPre, specPre, stale);
+}
+
+// ---- painting
+
+void EqDisplay::paint (juce::Graphics& g)
+{
+    const auto& pal = panel.pal;
+    const auto pl = plot();
+    const double sr = (double) juce::jmax (8000.f, proc.uiSampleRate.load());
+
+    // ---------- grid: decades of frequency, steps of 6 dB
+    {
+        for (float base : { 10.f, 100.f, 1000.f, 10000.f })
+            for (int m = 1; m <= 9; ++m)
+            {
+                const float hz = base * (float) m;
+                if (hz < EqCore::minHz || hz > EqCore::maxHz) continue;
+                const bool major = (m == 1 && base >= 100.f);
+                g.setColour (pal.ink.withAlpha (major ? 0.10f : 0.035f));
+                g.drawVerticalLine ((int) std::round (xOfHz (hz)), pl.getY(), pl.getBottom());
+            }
+
+        g.setFont (serif (11.f, true));
+        for (int db = -18; db <= 18; db += 6)
+        {
+            const float y = yOfDb ((float) db);
+            g.setColour (pal.ink.withAlpha (db == 0 ? 0.22f : 0.06f));
+            g.drawHorizontalLine ((int) std::round (y), pl.getX(), pl.getRight());
+            g.setColour (pal.dim.withAlpha (0.75f));
+            g.drawText ((db > 0 ? "+" : "") + juce::String (db), juce::Rectangle<float> (pl.getRight() + 5.f, y - 7.f, 30.f, 14.f), juce::Justification::centredLeft);
+        }
+
+        static const float labelHz[9] = { 50.f, 100.f, 200.f, 500.f, 1000.f, 2000.f, 5000.f, 10000.f, 20000.f };
+        static const char* labelTx[9] = { "50", "100", "200", "500", "1k", "2k", "5k", "10k", "20k" };
+        g.setColour (pal.dim.withAlpha (0.75f));
+        for (int k = 0; k < 9; ++k)
+            g.drawText (labelTx[k], juce::Rectangle<float> (xOfHz (labelHz[k]) - 16.f, pl.getBottom() + 3.f, 32.f, 14.f), juce::Justification::centred);
+    }
+
+    g.saveState();   // everything up to the band nodes is clipped to the plot; the nodes and readout may spill past it
+    g.reduceClipRegion (pl.expanded (1.f, 0.f).toNearestInt());
+
+    // ---------- spectrum
+    auto specPath = [&] (const std::vector<float>& s)
+    {
+        juce::Path p;
+        const int cols = (int) s.size();
+        for (int c = 0; c < cols; ++c)
+        {
+            const float x = pl.getX() + ((float) c + 0.5f) / (float) cols * pl.getWidth();
+            const float y = pl.getBottom() - juce::jlimit (0.f, 1.f, (s[(size_t) c] - kSpecMin) / (kSpecMax - kSpecMin)) * pl.getHeight();
+            if (c == 0) p.startNewSubPath (x, y); else p.lineTo (x, y);
+        }
+        return p;
+    };
+
+    if (! specPost.empty())
+    {
+        if (preBtn.getToggleState())
+        {
+            g.setColour (pal.dim.withAlpha (0.55f));
+            g.strokePath (specPath (specPre), juce::PathStrokeType (1.f));
+        }
+
+        auto line = specPath (specPost);
+        juce::Path fill (line);
+        fill.lineTo (pl.getRight(), pl.getBottom());
+        fill.lineTo (pl.getX(), pl.getBottom());
+        fill.closeSubPath();
+        g.setGradientFill (juce::ColourGradient (pal.acc.withAlpha (0.34f), 0.f, pl.getY(), pal.acc.withAlpha (0.02f), 0.f, pl.getBottom(), false));
+        g.fillPath (fill);
+        g.setColour (pal.acc.brighter (0.3f).withAlpha (0.7f));
+        g.strokePath (line, juce::PathStrokeType (1.2f));
+    }
+
+    // ---------- the filter's own response (dashed), so the plot shows everything shaping the tone
+    if (proc.apvts.getRawParameterValue ("fon")->load() > 0.5f)
+    {
+        const float fc = juce::jmax (20.f, proc.apvts.getRawParameterValue ("cutoff")->load());
+        const float q = juce::jmax (0.3f, proc.apvts.getRawParameterValue ("reso")->load());
+        const float mix = proc.apvts.getRawParameterValue ("fmix")->load();
+        const int type = juce::jlimit (0, 2, (int) proc.apvts.getRawParameterValue ("ftype")->load());
+
+        juce::Path fp;
+        for (int i = 0; i <= (int) pl.getWidth(); i += 3)
+        {
+            const float x = hzOfX (pl.getX() + (float) i) / fc;
+            const float den = std::sqrt ((1.f - x * x) * (1.f - x * x) + (x / q) * (x / q)) + 1.0e-6f;
+            float mag = type == 0 ? 1.f / den : type == 1 ? x * x / den : (x / q) / den;
+            mag = (1.f - mix) + mix * mag;
+            const float db = juce::jlimit (-40.f, 24.f, 20.f * std::log10 (mag + 1.0e-6f));
+            if (i == 0) fp.startNewSubPath (pl.getX(), yOfDb (db)); else fp.lineTo (pl.getX() + (float) i, yOfDb (db));
+        }
+        juce::Path dashed;
+        const float dashes[] = { 5.f, 4.f };
+        juce::PathStrokeType (1.4f).createDashedStroke (dashed, fp, dashes, 2);
+        g.setColour (pal.grass.withAlpha (0.85f));
+        g.fillPath (dashed);
+    }
+
+    // ---------- the equalizer curve, from the same filter maths the audio uses
+    std::array<EqCore::Band, EqCore::numBands> bands;
+    std::array<EqCore::Coeffs, EqCore::numBands> cf;
+    bool any = false;
+    for (int i = 0; i < EqCore::numBands; ++i)
+    {
+        bands[(size_t) i] = readBand (i);
+        if (bands[(size_t) i].on)
+        {
+            const auto& b = bands[(size_t) i];
+            cf[(size_t) i] = EqCore::design (b.type, b.freq, b.gainDb, b.q, sr);
+            any = true;
+        }
+    }
+
+    if (any)
+    {
+        const int focus = dragging ? selected : (hover >= 0 ? hover : selected);
+
+        juce::Path curve, area, one;
+        const float y0 = yOfDb (0.f);
+        for (int i = 0; i <= (int) pl.getWidth(); i += 2)
+        {
+            const float x = pl.getX() + (float) i, hz = hzOfX (x);
+            double db = 0.0;
+            for (int b = 0; b < EqCore::numBands; ++b)
+                if (bands[(size_t) b].on) db += EqCore::magDb (cf[(size_t) b], hz, sr);
+            const float y = yOfDb (juce::jlimit (-kPlotDb * 1.2f, kPlotDb * 1.2f, (float) db));
+            if (i == 0) { curve.startNewSubPath (x, y); area.startNewSubPath (x, y0); area.lineTo (x, y); }
+            else        { curve.lineTo (x, y); area.lineTo (x, y); }
+
+            if (focus >= 0 && bands[(size_t) focus].on)
+            {
+                const float yb = yOfDb ((float) EqCore::magDb (cf[(size_t) focus], hz, sr));
+                if (i == 0) one.startNewSubPath (x, yb); else one.lineTo (x, yb);
+            }
+        }
+        area.lineTo (pl.getRight(), y0);
+        area.closeSubPath();
+
+        g.setColour (pal.amber.withAlpha (0.14f));
+        g.fillPath (area);
+
+        if (focus >= 0 && bands[(size_t) focus].on)   // the focused band's own shape, faint, in its colour
+        {
+            juce::Path oneFill (one);
+            oneFill.lineTo (pl.getRight(), y0);
+            oneFill.lineTo (pl.getX(), y0);
+            oneFill.closeSubPath();
+            g.setColour (bandColour (focus).withAlpha (0.16f));
+            g.fillPath (oneFill);
+        }
+
+        for (int k = 3; k >= 1; --k)   // glow
+        {
+            g.setColour (pal.amber.withAlpha (0.07f * (float) (4 - k)));
+            g.strokePath (curve, juce::PathStrokeType (1.8f + (float) k * 2.2f, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
+        }
+        g.setColour (pal.amber.brighter (0.3f));
+        g.strokePath (curve, juce::PathStrokeType (2.f));
+    }
+    else
+    {
+        g.setColour (pal.dim.withAlpha (0.55f));
+        g.setFont (serif (14.f, true));
+        g.drawText ("double-click to add a band", pl.withTrimmedBottom (pl.getHeight() * 0.18f), juce::Justification::centred);
+    }
+
+    // ---------- band nodes
+    g.restoreState();
+    for (int i = 0; i < EqCore::numBands; ++i)
+    {
+        if (! bands[(size_t) i].on) continue;
+        const auto n = nodePos (i);
+        const bool hot = (i == hover) || (i == selected);
+        const float r = hot ? 9.f : 7.5f;
+        const auto col = bandColour (i);
+
+        g.setGradientFill (juce::ColourGradient (col.withAlpha (hot ? 0.5f : 0.32f), n.x, n.y, col.withAlpha (0.f), n.x + r + 8.f, n.y, true));
+        g.fillEllipse (n.x - r - 8.f, n.y - r - 8.f, (r + 8.f) * 2.f, (r + 8.f) * 2.f);
+        g.setColour (juce::Colours::black.withAlpha (0.3f));
+        g.fillEllipse (n.x - r + 1.f, n.y - r + 2.f, r * 2.f, r * 2.f);
+        g.setColour (col);
+        g.fillEllipse (n.x - r, n.y - r, r * 2.f, r * 2.f);
+        g.setColour (juce::Colours::white.withAlpha (hot ? 0.95f : 0.7f));
+        g.drawEllipse (n.x - r, n.y - r, r * 2.f, r * 2.f, 1.3f);
+        g.setColour (pal.soil.darker (0.4f));
+        g.setFont (serif (11.f, true));
+        g.drawText (juce::String (i + 1), juce::Rectangle<float> (n.x - r, n.y - r, r * 2.f, r * 2.f), juce::Justification::centred);
+    }
+
+    // ---------- a small readout for the band under the pointer (or being dragged)
+    const int info = dragging ? selected : hover;
+    if (info >= 0 && bands[(size_t) info].on)
+    {
+        const auto& b = bands[(size_t) info];
+        const auto n = nodePos (info);
+        juce::String l1 = juce::String (EqCore::typeName (b.type)) + "   " + hzText (b.freq);
+        juce::String l2 = (EqCore::usesGain (b.type) ? (b.gainDb >= 0.f ? "+" : "") + juce::String (b.gainDb, 1) + " dB   " : juce::String()) + "Q " + juce::String (b.q, 2);
+
+        g.setFont (serif (12.f));
+        auto textW = [&] (const juce::String& t)
+        {
+            juce::GlyphArrangement ga;
+            ga.addLineOfText (g.getCurrentFont(), t, 0.f, 0.f);
+            return ga.getBoundingBox (0, -1, true).getWidth();
+        };
+        const float w = juce::jmax (textW (l1), textW (l2)) + 18.f, h = 36.f;
+        float bx = juce::jlimit (4.f, (float) getWidth() - w - 4.f, n.x - w * 0.5f);
+        float by = n.y - 18.f - h;
+        if (by < 2.f) by = n.y + 18.f;
+        const juce::Rectangle<float> box (bx, by, w, h);
+
+        g.setColour (juce::Colours::black.withAlpha (0.25f));
+        g.fillRoundedRectangle (box.translated (0.f, 2.f), 8.f);
+        g.setGradientFill (juce::ColourGradient (pal.moss.withAlpha (0.96f), 0.f, box.getY(), pal.soil.withAlpha (0.97f), 0.f, box.getBottom(), false));
+        g.fillRoundedRectangle (box, 8.f);
+        g.setColour (bandColour (info).withAlpha (0.8f));
+        g.drawRoundedRectangle (box.reduced (0.5f), 8.f, 1.1f);
+        g.setColour (pal.ink);
+        g.drawText (l1, box.withHeight (h * 0.5f).translated (0.f, 3.f), juce::Justification::centred);
+        g.setColour (pal.dim);
+        g.drawText (l2, box.withTrimmedTop (h * 0.5f).translated (0.f, -1.f), juce::Justification::centred);
+    }
+}
+
 // ---------------------------------------------------------------- spectral gate window
 
 namespace
@@ -1922,10 +3084,15 @@ struct SpecDef
     double (*read) (const juce::String&);
 };
 
-const SpecDef kSpecDefs[3] = {
-    { "sthr",  "cutoff",         [] (double v) { return juce::String (v, 1) + " dB"; }, plainNumber },
-    { "sbal",  "weak / strong",  [] (double v) { return juce::String (v, 2); },         plainNumber },
-    { "stilt", "tilt",           [] (double v) { return juce::String (v, 2); },         plainNumber }
+const SpecDef kSpecDefs[7] = {
+    { "sthr",     "cutoff",         [] (double v) { return juce::String (v, 1) + " dB"; }, plainNumber },
+    { "sbal",     "weak / strong",  [] (double v) { return juce::String (v, 2); },         plainNumber },
+    { "stilt",    "tilt",           [] (double v) { return juce::String (v, 2); },         plainNumber },
+    { "sattack",  "attack",         [] (double v) { return juce::String (juce::roundToInt ((float) v)) + " ms"; }, plainNumber },
+    { "shold",    "hold",           [] (double v) { return juce::String (juce::roundToInt ((float) v)) + " ms"; }, plainNumber },
+    { "srelease", "release",        [] (double v) { return juce::String (juce::roundToInt ((float) v)) + " ms"; }, plainNumber },
+    { "ssmooth",  "smooth",         [] (double v) { return juce::String (juce::roundToInt ((float) (v * 100.0))) + "%"; },
+                                    [] (const juce::String& t) { return plainNumber (t) / 100.0; } }
 };
 
 constexpr float kFloorDb = -100.f;   // bottom of the analyzer
@@ -2024,31 +3191,39 @@ void SpectralOverlay::mouseDown (const juce::MouseEvent& e)
 
 void SpectralOverlay::resized()
 {
-    // "gate" card: cutoff and weak / strong balance, side by side
+    // "gate" card: the three main controls, large
     {
         const auto gr = group (0);
-        const int sw = (int) ((gr.getWidth() - 24.f) / 2.f);
-        for (int c = 0; c < 2; ++c)
+        const int sw = (int) ((gr.getWidth() - 24.f) / 3.f);
+        for (int c = 0; c < 3; ++c)
         {
             auto& k = knobs[(size_t) c];
             const int x = (int) gr.getX() + 12 + c * sw, y = (int) gr.getY();
             k.label.setBounds (x, y + 22, sw, 16);
-            k.slider.setBounds (x, y + 38, sw, 150);
+            k.slider.setBounds (x, y + 38, sw, 106);
         }
     }
 
-    // "tilt" card: the tilt knob, and beside it the enable key and the FFT size key
+    // "response" card: how the gate moves in time and spreads across neighbouring frequencies
     {
         const auto gr = group (1);
+        const int sw = (int) ((gr.getWidth() - 24.f) / 4.f);
+        for (int c = 0; c < 4; ++c)
+        {
+            auto& k = knobs[(size_t) (3 + c)];
+            const int x = (int) gr.getX() + 12 + c * sw, y = (int) gr.getY();
+            k.label.setBounds (x, y + 22, sw, 16);
+            k.slider.setBounds (x, y + 38, sw, 112);
+        }
+    }
+
+    // "tilt & window" card: the tilt enable key and the FFT size key, side by side
+    {
+        const auto gr = group (2);
         const int sw = (int) ((gr.getWidth() - 24.f) / 2.f);
         const int x = (int) gr.getX() + 12, y = (int) gr.getY();
-        auto& k = knobs[2];
-        k.label.setBounds (x, y + 22, sw, 16);
-        k.slider.setBounds (x, y + 38, sw, 150);
-
-        const int bx = x + sw + (sw - 124) / 2;
-        tiltBtn.setBounds (bx, y + 46, 124, 32);
-        winBtn.setBounds  (bx, y + 118, 124, 32);
+        tiltBtn.setBounds (x + (sw - 130) / 2, y + 42, 130, 32);
+        winBtn.setBounds  (x + sw + (sw - 130) / 2, y + 42, 130, 32);
     }
 
     const auto cd = card();
@@ -2060,10 +3235,14 @@ SpectralGate::Params SpectralOverlay::readParams() const
 {
     auto v = [this] (const char* id) { return proc.apvts.getRawParameterValue (id)->load(); };
     SpectralGate::Params p;
-    p.cutoffDb = v ("sthr");
-    p.balance  = v ("sbal");
-    p.tiltOn   = v ("stilton") > 0.5f;
-    p.tilt     = v ("stilt");
+    p.cutoffDb  = v ("sthr");
+    p.balance   = v ("sbal");
+    p.tiltOn    = v ("stilton") > 0.5f;
+    p.tilt      = v ("stilt");
+    p.attackMs  = v ("sattack");
+    p.holdMs    = v ("shold");
+    p.releaseMs = v ("srelease");
+    p.smooth    = v ("ssmooth");
     return p;
 }
 
@@ -2328,20 +3507,21 @@ void SpectralOverlay::paintCardStatic (juce::Graphics& g)
     g.setColour (pal.dim);
     g.drawText ("lets through what is above the cutoff, or what is below it", (int) cd.getX() + 24, (int) cd.getY() + 36, 360, 16, juce::Justification::centredLeft);
 
-    static const char* titles[2] = { "gate", "tilt & window" };
-    for (int r = 0; r < 2; ++r)
+    static const char* titles[3] = { "gate", "response", "tilt & window" };
+    for (int r = 0; r < 3; ++r)
     {
         panel.drawGroup (g, group (r));
         panel.drawGroupTitle (g, group (r), titles[r]);
     }
 
-    // caption above the FFT size key (it sits in the second column of the "tilt" card)
+    // small captions over the two keys in the last card
     {
-        const auto gr = group (1);
+        const auto gr = group (2);
         const float sw = (float) (int) ((gr.getWidth() - 24.f) / 2.f);
-        g.setFont (Scat::serif (14.f, true));
+        g.setFont (Scat::serif (13.f, true));
         g.setColour (pal.dim);
-        g.drawText ("fft size", juce::Rectangle<float> (gr.getX() + 12.f + sw, gr.getY() + 94.f, sw, 20.f), juce::Justification::centred);
+        g.drawText ("slant the cutoff", juce::Rectangle<float> (gr.getX() + 12.f, gr.getY() + 24.f, sw, 16.f), juce::Justification::centred);
+        g.drawText ("fft size",         juce::Rectangle<float> (gr.getX() + 12.f + sw, gr.getY() + 24.f, sw, 16.f), juce::Justification::centred);
     }
 
     paintAnalyzerShell (g);

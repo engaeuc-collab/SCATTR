@@ -2,6 +2,7 @@
 #include <juce_audio_utils/juce_audio_utils.h>
 #include <juce_dsp/juce_dsp.h>
 #include "SpectralGate.h"
+#include "EqCore.h"
 #include <atomic>
 #include <memory>
 #include <vector>
@@ -93,6 +94,12 @@ public:
     // Spectral gate (the pop-out window). The audio thread runs it; the editor reads its analyzer arrays.
     SpectralGate spec;
 
+    // Taps for the FX-tab equalizer display: the mono signal going into and coming out of the EQ.
+    // The audio thread writes, the UI thread reads (a torn read only blurs a single frame).
+    static constexpr int eqTapSize = 8192;   // power of two
+    std::atomic<float> eqPreBuf[eqTapSize], eqPostBuf[eqTapSize];
+    std::atomic<int>   eqTapW { 0 };         // next write index, always kept in 0..eqTapSize-1
+
 private:
     void handleAsyncUpdate() override { setLatencySamples (pendingLatency.load()); }   // the host hears about latency on the message thread
     std::atomic<int> pendingLatency { 0 };
@@ -137,6 +144,14 @@ private:
     float texLevel = 0.f;
 
     // effects
+    juce::dsp::Phaser<float> phaser;
+    juce::dsp::Chorus<float> chorus;
+    juce::SmoothedValue<float, juce::ValueSmoothingTypes::Linear> pOnSm, cOnSm;   // bypass fades
+    bool phaserActive = false, chorusActive = false;
+
+    EqCore::Processor eq;
+    std::atomic<float>* eqParam[EqCore::numBands][5] {};   // on, type, freq, gain, q (cached so the audio thread never looks them up by name)
+
     juce::dsp::StateVariableTPTFilter<float> filter;
     juce::SmoothedValue<float, juce::ValueSmoothingTypes::Linear> fOnSm, dOnSm, rOnSm;   // bypass fades
     std::vector<float> revL, revR, preBuf[2];                                           // reverb scratch + pre-delay

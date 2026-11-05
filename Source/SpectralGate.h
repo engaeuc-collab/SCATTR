@@ -8,36 +8,42 @@
 // ---------------------------------------------------------------------------------------------
 // Spectral gate: "only allow frequency components above or below a particular cut-off amplitude".
 //
-// The signal is split into FFT bins. Every bin is measured against the cutoff amplitude:
-//   * a bin at or above the cutoff is STRONG, a bin below it is WEAK
-//   * the BALANCE control decides how much of each side is let through:
+// Every FFT bin is measured against the cutoff amplitude and counts as STRONG (at or above it) or WEAK:
+//   * BALANCE decides how much of each side is let through:
 //        0.0  only the weak bins pass   (the loud parts are removed, what is left is the quiet "air")
 //        0.5  everything passes         (the gate is neutral)
 //        1.0  only the strong bins pass (a classic gate: everything under the cutoff is removed)
-//     in between, the side that is being pushed back fades out linearly
-//   * TILT slants the cutoff across the spectrum (0.5 = flat). Towards 1 the cutoff rises with frequency, so
-//     the highs are gated harder; towards 0 it falls with frequency, so the lows are. It only acts while
-//     tilt is enabled.
+//   * TILT slants the cutoff across the spectrum (0.5 = flat), pivoting at 1 kHz. Only while enabled.
 //
-// The decision is made fresh for every bin of every frame: no attack, release or hold, exactly like the
-// gate it is modelled on. That is what gives it its characteristic broken-up, "spectral" sound.
+// What makes the gating accurate rather than merely "bin by bin":
+//   * 8x overlap with sqrt-Hann windows: the overlap-add stays clean even though every frame is modified
+//   * HYSTERESIS: a bin that is open must fall 2 dB below the cutoff to close, so material sitting right on
+//     the cutoff does not flutter
+//   * HOLD / ATTACK / RELEASE act on how "strong" each bin is, in both directions, so the gate behaves the
+//     same whether it is keeping the loud side or the quiet side (attack = a bin turning strong,
+//     release = a bin turning weak)
+//   * MAIN-LOBE PROTECTION: a strong partial smears over about +-2 bins in the analysis. Those bins are
+//     treated as part of it, so the partial is gated as one piece instead of being chopped at its edges
+//   * SMOOTH spreads each strong bin's influence outward along a sloping skirt, which removes the hollow,
+//     watery sound hard spectral holes make
 //
-// Engine: sqrt-Hann analysis + synthesis windows with 4x overlap (so the overlap-add sums back to unity),
-// both channels through ONE complex FFT (left = real part, right = imaginary part). The two channels are
-// fully linked: each bin's level is the louder of the two and the same gain is applied to both, so the
-// stereo image never wobbles. Latency is exactly the window size (see getLatency()). Everything is
-// pre-allocated for the largest window, so changing the window size on the audio thread never allocates.
+// Engine: both channels go through ONE complex FFT (left = real part, right = imaginary part), fully linked:
+// each bin's level is the louder of the two and the same gain is applied to both, so the stereo image never
+// wobbles. Latency is exactly the window size (getLatency()). Everything is pre-allocated for the largest
+// window, so changing the window size on the audio thread never allocates.
 // ---------------------------------------------------------------------------------------------
 class SpectralGate
 {
 public:
     static constexpr int minOrder = 9, maxOrder = 12;            // 512 .. 4096
     static constexpr int maxN = 1 << maxOrder;
-    static constexpr int overlap = 4;
+    static constexpr int overlap = 8;
     static constexpr int numBands = 64;                           // analyzer bands (log spaced)
     static constexpr float fMinHz = 20.f, fMaxHz = 20000.f;       // analyzer range
     static constexpr float tiltPivotHz = 1000.f;                  // the cutoff keeps its set value here, whatever the tilt
     static constexpr float maxTiltDbPerOct = 9.f;                 // tilt 0 / 1 = -9 / +9 dB per octave
+    static constexpr float hysteresisDb = 2.f;
+    static constexpr int   lobeBins = 2;                          // main-lobe protection radius
 
     struct Params
     {
@@ -45,6 +51,10 @@ public:
         float balance = 0.7f;       // 0..1: 0 = only weak bins pass, 0.5 = all pass, 1 = only strong bins pass
         bool  tiltOn = false;
         float tilt = 0.5f;          // 0..1, 0.5 = flat
+        float attackMs = 5.f;       // how fast a bin turns strong
+        float holdMs = 25.f;        // a bin stays strong this long after it drops below the cutoff
+        float releaseMs = 90.f;     // how fast a bin turns weak
+        float smooth = 0.3f;        // 0..1: how far a strong bin's influence spreads to its neighbours
         int   order = 11;           // window = 2^order
     };
 
@@ -73,7 +83,7 @@ public:
         }
         for (auto* v : { &inL, &inR, &accL, &accR, &re, &im, &win }) v->assign ((size_t) maxN, 0.f);
         rev.assign ((size_t) maxN, 0);
-        for (auto* v : { &lvDb, &outDb }) v->assign ((size_t) maxN / 2 + 1, 0.f);
+        for (auto* v : { &lvDb, &outDb, &holdLeft, &strongPrev, &o0, &o1, &oS }) v->assign ((size_t) maxN / 2 + 1, 0.f);
         for (auto& a : dispIn)  a.store (-200.f);
         for (auto& a : dispOut) a.store (-200.f);
         setOrder (11);
@@ -106,6 +116,7 @@ public:
         {
             std::fill (accL.begin(), accL.begin() + N, 0.f);
             std::fill (accR.begin(), accR.begin() + N, 0.f);
+            resetGates();
             counter = 0;
         }
         wasRunning = running;
@@ -145,6 +156,13 @@ public:
 private:
     static float clamp01 (float v) { return std::min (1.f, std::max (0.f, v)); }
 
+    void resetGates()
+    {
+        std::fill (holdLeft.begin(), holdLeft.end(), 0.f);
+        std::fill (strongPrev.begin(), strongPrev.end(), 0.f);
+        primed = false;   // the first frame sets every bin's smoothed state straight to its target
+    }
+
     void setOrder (int o)
     {
         o = std::min (maxOrder, std::max (minOrder, o));
@@ -171,6 +189,7 @@ private:
         }
 
         for (auto* v : { &inL, &inR, &accL, &accR }) std::fill (v->begin(), v->end(), 0.f);
+        resetGates();
         inPos = accPos = counter = 0;
 
         // analyzer band -> bin map
@@ -229,9 +248,14 @@ private:
 
         const int half = N / 2;
         const float binHz = (float) sr / (float) N;
+        const float hopSec = (float) hop / (float) sr;
+        const float aC = std::exp (-hopSec / (0.001f * std::max (0.1f, p.attackMs)));    // a bin turning strong
+        const float rC = std::exp (-hopSec / (0.001f * std::max (0.1f, p.releaseMs)));   // a bin turning weak
+        const float holdSec = 0.001f * std::max (0.f, p.holdMs);
         const float gWeak = weakGain (p), gStrong = strongGain (p);
-        const float dbWeak = 20.f * std::log10 (gWeak + 1.0e-9f), dbStrong = 20.f * std::log10 (gStrong + 1.0e-9f);
+        const float dbWeak = 20.f * std::log10 (std::max (gWeak, 1.0e-4f)), dbStrong = 20.f * std::log10 (std::max (gStrong, 1.0e-4f));   // -80 dB floor
 
+        // 1) measure every bin and decide strong / weak (with hysteresis and hold)
         for (int k = 0; k <= half; ++k)
         {
             const int k2 = (N - k) & (N - 1);
@@ -241,26 +265,67 @@ private:
             const float rr = 0.5f * (zi - ci), ri = -0.5f * (zr - cr);         // right channel's bin
             const float mag = std::sqrt (std::max (lr * lr + li * li, rr * rr + ri * ri)) * norm;
             const float lv = 20.f * std::log10 (mag + 1.0e-9f);
+            lvDb[(size_t) k] = lv;
 
-            // strong or weak? (the DC bin is judged with the first bin's cutoff)
-            const bool strong = lv >= thresholdDb (p, (float) std::max (k, 1) * binHz);
-            const float gl = strong ? gStrong : gWeak;
+            // (the DC bin is judged with the first bin's cutoff)
+            const float thr = thresholdDb (p, (float) std::max (k, 1) * binHz);
+            bool strong = lv >= (strongPrev[(size_t) k] > 0.5f ? thr - hysteresisDb : thr);
 
+            if (strong)                       holdLeft[(size_t) k] = holdSec;
+            else if (holdLeft[(size_t) k] > 0.f) { holdLeft[(size_t) k] -= hopSec; strong = true; }
+
+            strongPrev[(size_t) k] = strong ? 1.f : 0.f;
+            o0[(size_t) k] = strong ? 1.f : 0.f;
+        }
+
+        // 2) main-lobe protection: a strong bin takes its +-lobeBins neighbours with it
+        for (int k = 0; k <= half; ++k)
+        {
+            float m = 0.f;
+            for (int j = std::max (0, k - lobeBins); j <= std::min (half, k + lobeBins); ++j) m = std::max (m, o0[(size_t) j]);
+            o1[(size_t) k] = m;
+        }
+
+        // 3) skirts: influence falls off linearly beyond the lobe (two scans give the exact max-with-falloff)
+        const int rad = (int) std::lround (clamp01 (p.smooth) * 12.f * (float) N / 2048.f);
+        if (rad > 0)
+        {
+            const float fall = 1.f / (float) (rad + 1);
+            for (int k = 1; k <= half; ++k)      o1[(size_t) k] = std::max (o1[(size_t) k], o1[(size_t) k - 1] - fall);
+            for (int k = half - 1; k >= 0; --k)  o1[(size_t) k] = std::max (o1[(size_t) k], o1[(size_t) k + 1] - fall);
+        }
+
+        // 4) smooth "strongness" in time (attack when it rises, release when it falls), then turn it into gain
+        if (! primed)
+        {
+            for (int k = 0; k <= half; ++k) oS[(size_t) k] = o1[(size_t) k];
+            primed = true;
+        }
+
+        for (int k = 0; k <= half; ++k)
+        {
+            float& s = oS[(size_t) k];
+            const float t = o1[(size_t) k];
+            s += (t - s) * (1.f - (t > s ? aC : rC));
+
+            const float gDb = dbWeak + (dbStrong - dbWeak) * s;
+            const float gl = std::pow (10.f, gDb / 20.f);
+
+            const int k2 = (N - k) & (N - 1);
             re[(size_t) k] *= gl;  im[(size_t) k] *= gl;
             if (k > 0 && k < half) { re[(size_t) k2] *= gl; im[(size_t) k2] *= gl; }
 
-            lvDb[(size_t) k]  = lv;
-            outDb[(size_t) k] = lv + (strong ? dbStrong : dbWeak);
+            outDb[(size_t) k] = lvDb[(size_t) k] + gDb;
         }
 
         fft (true);
 
-        const float s = 0.5f / (float) N;   // 1/N for the inverse FFT, 1/2 for the 4x overlap of squared windows
+        const float sc = (2.f / (float) overlap) / (float) N;   // 1/N for the inverse FFT, 2/overlap for the sum of the squared windows
         for (int j = 0; j < N; ++j)
         {
             const int idx = (accPos + j) & mask;
-            accL[(size_t) idx] += re[(size_t) j] * win[(size_t) j] * s;
-            accR[(size_t) idx] += im[(size_t) j] * win[(size_t) j] * s;
+            accL[(size_t) idx] += re[(size_t) j] * win[(size_t) j] * sc;
+            accR[(size_t) idx] += im[(size_t) j] * win[(size_t) j] * sc;
         }
 
         // analyzer
@@ -289,12 +354,13 @@ private:
     }
 
     double sr = 44100.0;
-    int order = -1, N = 2048, hop = 512;
+    int order = -1, N = 2048, hop = 256;
     int inPos = 0, accPos = 0, counter = 0;
     float norm = 1.f, en = 0.f;
-    bool wasRunning = false;
+    bool wasRunning = false, primed = false;
 
     std::vector<float> twC, twS, inL, inR, accL, accR, re, im, win, lvDb, outDb;
+    std::vector<float> holdLeft, strongPrev, o0, o1, oS;   // per-bin: hold timer, last decision, raw / spread / smoothed "strongness"
     std::vector<int> rev;
 
     int bandLo[numBands] {}, bandHi[numBands] {}, bandI0[numBands] {};

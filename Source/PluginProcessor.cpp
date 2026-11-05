@@ -59,6 +59,46 @@ juce::AudioProcessorValueTreeState::ParameterLayout makeLayout()
     p.push_back (std::make_unique<juce::AudioParameterBool> (juce::ParameterID { "don", 1 }, "Delay On",  false));
     p.push_back (std::make_unique<juce::AudioParameterBool> (juce::ParameterID { "ron", 1 }, "Reverb On", false));
 
+    // phaser
+    p.push_back (std::make_unique<juce::AudioParameterBool> (juce::ParameterID { "pon", 1 }, "Phaser On", false));
+    add ("prate",   "Phaser Rate",       0.05f, 10.f,   0.5f,  0.4f);    // Hz
+    add ("pdepth",  "Phaser Depth",      0.f,   1.f,    0.6f,  1.f);
+    {   // centre frequency of the sweep: 1 kHz in the middle of the knob
+        NR r (100.f, 8000.f);
+        r.setSkewForCentre (1000.f);
+        p.push_back (std::make_unique<juce::AudioParameterFloat> (juce::ParameterID { "pcenter", 1 }, "Phaser Center", r, 1000.f));
+    }
+    add ("pfb",     "Phaser Feedback",  -0.95f, 0.95f,  0.4f,  1.f);
+    add ("pmix",    "Phaser Mix",        0.f,   1.f,    0.5f,  1.f);
+
+    // chorus
+    p.push_back (std::make_unique<juce::AudioParameterBool> (juce::ParameterID { "con", 1 }, "Chorus On", false));
+    add ("crate",   "Chorus Rate",       0.1f,  8.f,    1.0f,  0.5f);    // Hz
+    add ("cdepth",  "Chorus Depth",      0.f,   1.f,    0.35f, 1.f);
+    add ("cmix",    "Chorus Mix",        0.f,   1.f,    0.5f,  1.f);
+
+    // equalizer: eight bands, all off until the user adds them
+    {
+        static const float defFreq[EqCore::numBands] = { 40.f, 120.f, 350.f, 1000.f, 2500.f, 6000.f, 10000.f, 16000.f };
+        juce::StringArray typeNames;
+        for (int t = 0; t < EqCore::numTypes; ++t) typeNames.add (EqCore::typeName (t));
+
+        for (int i = 0; i < EqCore::numBands; ++i)
+        {
+            const juce::String n (i + 1), id ("eq" + juce::String (i));
+            p.push_back (std::make_unique<juce::AudioParameterBool> (juce::ParameterID { id + "on", 1 }, "EQ " + n + " On", false));
+            p.push_back (std::make_unique<juce::AudioParameterChoice> (juce::ParameterID { id + "ty", 1 }, "EQ " + n + " Type", typeNames, 0));
+            NR fr (EqCore::minHz, EqCore::maxHz);
+            fr.setSkewForCentre (1000.f);
+            p.push_back (std::make_unique<juce::AudioParameterFloat> (juce::ParameterID { id + "f", 1 }, "EQ " + n + " Freq", fr, defFreq[i]));
+            p.push_back (std::make_unique<juce::AudioParameterFloat> (juce::ParameterID { id + "g", 1 }, "EQ " + n + " Gain",
+                                                                      NR (-EqCore::maxGainDb, EqCore::maxGainDb), 0.f));
+            NR qr (0.1f, 18.f);
+            qr.setSkewForCentre (1.f);
+            p.push_back (std::make_unique<juce::AudioParameterFloat> (juce::ParameterID { id + "q", 1 }, "EQ " + n + " Q", qr, 1.f));
+        }
+    }
+
     p.push_back (std::make_unique<juce::AudioParameterBool> (
         juce::ParameterID { "drone", 1 }, "Drone (free-run)", false));   // off by default: keys play it
 
@@ -71,6 +111,10 @@ juce::AudioProcessorValueTreeState::ParameterLayout makeLayout()
     add ("sbal",     "Gate Weak/Strong Balance", 0.f, 1.f,  0.7f,  1.f);   // 0 = only weak bins pass, 0.5 = all pass, 1 = only strong bins pass
     p.push_back (std::make_unique<juce::AudioParameterBool> (juce::ParameterID { "stilton", 1 }, "Gate Enable Tilt", false));
     add ("stilt",    "Gate Tilt",           0.f,   1.f,    0.5f,  1.f);       // slants the cutoff across frequency (0.5 = flat)
+    add ("sattack",  "Gate Attack",         1.f,   200.f,  5.f,   0.4f);      // how fast a bin turns strong (ms)
+    add ("shold",    "Gate Hold",           0.f,   300.f,  25.f,  0.5f);      // how long a bin stays strong after it drops below the cutoff (ms)
+    add ("srelease", "Gate Release",        5.f,   1000.f, 90.f,  0.4f);      // how fast a bin turns weak (ms)
+    add ("ssmooth",  "Gate Smooth",         0.f,   1.f,    0.3f,  1.f);       // how far a strong bin's influence spreads to its neighbours
     p.push_back (std::make_unique<juce::AudioParameterChoice> (
         juce::ParameterID { "swin", 1 }, "Gate Window", juce::StringArray { "512", "1024", "2048", "4096" }, 2));
 
@@ -178,6 +222,14 @@ ScattrProcessor::ScattrProcessor()
 {
     formats.registerBasicFormats();
     for (auto& s : scopeBuf) s.store (0.f, std::memory_order_relaxed);
+    for (auto& s : eqPreBuf)  s.store (0.f, std::memory_order_relaxed);
+    for (auto& s : eqPostBuf) s.store (0.f, std::memory_order_relaxed);
+    for (int i = 0; i < EqCore::numBands; ++i)
+    {
+        static const char* suffix[5] = { "on", "ty", "f", "g", "q" };
+        for (int k = 0; k < 5; ++k)
+            eqParam[i][k] = apvts.getRawParameterValue ("eq" + juce::String (i) + suffix[k]);
+    }
     for (int i = 0; i <= 1024; ++i)
         env[i] = 0.5f - 0.5f * std::cos (juce::MathConstants<float>::twoPi * (float) i / 1024.f);
     loadTextures();
@@ -257,6 +309,21 @@ void ScattrProcessor::prepareToPlay (double sampleRate, int samplesPerBlock)
     texLevel = 0.f;
     cutoffSm.reset (sampleRate, 0.03);
     cutoffSm.setCurrentAndTargetValue (20000.f);
+
+    {
+        const juce::dsp::ProcessSpec ps { sampleRate, (juce::uint32) juce::jmax (1, samplesPerBlock), 2 };
+        phaser.prepare (ps);  phaser.reset();
+        chorus.prepare (ps);  chorus.reset();
+        chorus.setCentreDelay (8.f);
+        chorus.setFeedback (0.f);
+        for (auto* sm : { &pOnSm, &cOnSm })
+        {
+            sm->reset (sampleRate, 0.03);
+            sm->setCurrentAndTargetValue (0.f);
+        }
+        phaserActive = chorusActive = false;
+        eq.prepare (sampleRate);
+    }
 
     spec.prepare (sampleRate);
     reportedLatency = 0;
@@ -704,6 +771,38 @@ void ScattrProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::Midi
         if (R != nullptr) R[n] = yR;
     }
 
+    // phaser and chorus: block-based, with the on button fading their mix so bypassing never clicks
+    {
+        juce::dsp::AudioBlock<float> block (buffer);
+        auto runMod = [&] (auto& fx, bool on, juce::SmoothedValue<float, juce::ValueSmoothingTypes::Linear>& sm, bool& active, float mix)
+        {
+            sm.setTargetValue (on ? 1.f : 0.f);
+            const float fade = sm.skip (numSamples);
+            if (on || fade > 0.0005f)
+            {
+                active = true;
+                fx.setMix (juce::jlimit (0.f, 1.f, mix * fade));
+                juce::dsp::ProcessContextReplacing<float> ctx (block);
+                fx.process (ctx);
+            }
+            else if (active)
+            {
+                fx.reset();
+                active = false;
+            }
+        };
+
+        phaser.setRate (prm ("prate"));
+        phaser.setDepth (prm ("pdepth"));
+        phaser.setCentreFrequency (prm ("pcenter"));
+        phaser.setFeedback (prm ("pfb"));
+        runMod (phaser, prm ("pon") > 0.5f, pOnSm, phaserActive, prm ("pmix"));
+
+        chorus.setRate (prm ("crate"));
+        chorus.setDepth (prm ("cdepth"));
+        runMod (chorus, prm ("con") > 0.5f, cOnSm, chorusActive, prm ("cmix"));
+    }
+
     // reverb: runs on a wet-only copy and is blended in per sample, so bypassing fades instead of clicking
     const bool revRunning = rOn || rOnSm.getCurrentValue() > 0.0005f;
     if (revRunning)
@@ -758,6 +857,36 @@ void ScattrProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::Midi
         revActive = false;
     }
 
+    // equalizer: after every other effect. The two taps feed the spectrum behind the curve in the FX tab.
+    {
+        auto tap = [&] (std::atomic<float>* ring, int w)
+        {
+            for (int n = 0; n < numSamples; ++n)
+            {
+                ring[w].store (R != nullptr ? 0.5f * (L[n] + R[n]) : L[n], std::memory_order_relaxed);
+                w = (w + 1) & (eqTapSize - 1);
+            }
+        };
+
+        EqCore::Band bands[EqCore::numBands];
+        for (int i = 0; i < EqCore::numBands; ++i)
+        {
+            auto& b = bands[i];
+            b.on     = eqParam[i][0]->load() > 0.5f;
+            b.type   = juce::jlimit (0, EqCore::numTypes - 1, (int) eqParam[i][1]->load());
+            b.freq   = eqParam[i][2]->load();
+            b.gainDb = eqParam[i][3]->load();
+            b.q      = eqParam[i][4]->load();
+        }
+        eq.setBands (bands);
+
+        const int w0 = eqTapW.load (std::memory_order_relaxed);
+        tap (eqPreBuf, w0);
+        eq.process (L, R, numSamples);
+        tap (eqPostBuf, w0);
+        eqTapW.store ((w0 + numSamples) & (eqTapSize - 1), std::memory_order_release);
+    }
+
     // spectral gate: the last stage, so it shapes everything the plugin makes
     {
         SpectralGate::Params sp;
@@ -765,6 +894,10 @@ void ScattrProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::Midi
         sp.balance    = prm ("sbal");
         sp.tiltOn     = prm ("stilton") > 0.5f;
         sp.tilt       = prm ("stilt");
+        sp.attackMs   = prm ("sattack");
+        sp.holdMs     = prm ("shold");
+        sp.releaseMs  = prm ("srelease");
+        sp.smooth     = prm ("ssmooth");
         sp.order      = SpectralGate::minOrder + juce::jlimit (0, 3, (int) prm ("swin"));
         const bool sOn = prm ("son") > 0.5f;
 
