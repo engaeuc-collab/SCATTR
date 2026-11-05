@@ -173,7 +173,7 @@ inline float buttonLit (const juce::Button& b)
 // reverb space, (retired: filter on), the echo / reverb on buttons, the spectral gate button, phaser on, chorus on, and finally
 // the equalizer plot and its PRE button. The retired entries are never shown; they only keep the numbering. ScattrPanel::hoveredControl() returns these indices.
 struct Tip { const char* name; const char* text; };
-const Tip kTips[42] = {
+const Tip kTips[43] = {
     { "seed size",     "Length of each grain. Short is gritty, long is smooth and recognisable." },
     { "rain",          "How many grains fall per second. More makes a thicker, denser cloud." },
     { "speed",         "How fast the playhead travels through each sample. 1x is normal; pitch stays put." },
@@ -215,7 +215,8 @@ const Tip kTips[42] = {
     { "phaser",        "Turns the phaser on or off." },
     { "chorus",        "Turns the chorus on or off." },
     { "equalizer",     "Double-click to add a band (up to 24), drag a dot to move it, scroll over it to change its width, right-click it for its shape, slope and dynamic mode. Ctrl+Z undoes." },
-    { "pre",           "Also shows the sound going into the equalizer, as a thin line behind the filled spectrum." }
+    { "pre",           "Also shows the sound going into the equalizer, as a thin line behind the filled spectrum." },
+    { "solo",          "Plays only the reversed grains. The grain knobs above are bypassed (greyed out) until you switch it off." }
 };
 
 // A raised, glossy key. `lit` (0..1) is how switched-on it looks: the body, glow and rim fade between the two
@@ -931,6 +932,9 @@ ScattrPanel::ScattrPanel (ScattrProcessor& p) : proc (p)
 
     addAndMakeVisible (specBtn);
     specBtn.setClickingTogglesState (false);                 // the light follows the gate's on/off parameter; a press opens the window
+    addAndMakeVisible (soloBtn);
+    soloAttach = std::make_unique<juce::AudioProcessorValueTreeState::ButtonAttachment> (proc.apvts, "rsolo", soloBtn);
+    soloBtn.getProperties().set ("fontSize", 12.0);
     specBtn.getProperties().set ("fontSize", 12.0);          // the label is longer than DRIFT / TUNE, so it is set a little smaller
     specBtn.setMouseCursor (juce::MouseCursor::PointingHandCursor);
     specBtn.onClick = [this]
@@ -1036,6 +1040,7 @@ void ScattrPanel::setTab (int t)
     droneBtn.setVisible (grains);
     tuneBtn.setVisible (grains);
     specBtn.setVisible (grains);
+    soloBtn.setVisible (grains);
     for (auto& b : setBtn) b.setVisible (sett);
     startBtn.setVisible (sett);
     tabBtn[(size_t) t].setToggleState (true, juce::dontSendNotification);
@@ -1071,6 +1076,13 @@ void ScattrPanel::resized()
         static const size_t row1[6] = { 0, 1, 2, 3, 4, 21 };      // seed size, rain, speed, reverse, scatter, pan spread
         static const size_t row2[4] = { 5, 6, 19, 17 };            // bloom, rest, random, master tune
         for (int k = 0; k < 6; ++k) place (row1[k], grainPanel(), 6, k, 88);
+
+        // the solo key sits just above the reverse knob's name
+        {
+            const auto gp = grainPanel();
+            const int sw = (int) ((gp.getWidth() - 24.f) / 6.f);
+            soloBtn.setBounds ((int) gp.getX() + 12 + 3 * sw + (sw - 54) / 2, (int) gp.getY() + 3, 54, 19);
+        }
         for (int k = 0; k < 4; ++k) place (row2[k], motionPanel(), 5, k, 88);
 
         // the last of the motion row's five columns holds the three keys, stacked
@@ -1349,7 +1361,7 @@ void ScattrPanel::timerCallback()
 
     // on/off buttons glide between their two looks in 0.2 s
     specBtn.setToggleState (proc.apvts.getRawParameterValue ("son")->load() > 0.5f, juce::dontSendNotification);
-    for (auto* b : { &droneBtn, &tuneBtn, &donBtn, &ronBtn, &specBtn, &ponBtn, &conBtn, &setBtn[0], &setBtn[1], &setBtn[2] })
+    for (auto* b : { &droneBtn, &tuneBtn, &soloBtn, &donBtn, &ronBtn, &specBtn, &ponBtn, &conBtn, &setBtn[0], &setBtn[1], &setBtn[2] })
     {
         const float target = b->getToggleState() ? 1.f : 0.f;
         float v = buttonLit (*b);
@@ -1373,6 +1385,16 @@ void ScattrPanel::timerCallback()
     }
 
     updateEq();
+
+    {   // reverse solo: the grains section is bypassed, so its knobs go grey and stop answering the mouse
+        const bool solo = proc.apvts.getRawParameterValue ("rsolo")->load() > 0.5f;
+        for (size_t idx : { (size_t) 0, (size_t) 1, (size_t) 2, (size_t) 3, (size_t) 4, (size_t) 21 })
+        {
+            knobs[idx].slider.setEnabled (! solo);
+            const float al = solo ? 0.35f : 1.f;
+            if (knobs[idx].slider.getAlpha() != al) { knobs[idx].slider.setAlpha (al); knobs[idx].label.setAlpha (al); }
+        }
+    }
 
     static const char* rt[4] = { "ROOM", "PLATE", "HALL", "CHURCH" };
     const int ri = juce::jlimit (0, 3, (int) proc.apvts.getRawParameterValue ("rtype")->load());
@@ -2609,7 +2631,7 @@ void ScattrPanel::paintKnobGlows (juce::Graphics& g)
 // The wider glow behind an on/off button. It swells as the button switches (see drawKeyBody for the key itself).
 void ScattrPanel::paintToggleGlows (juce::Graphics& g)
 {
-    for (auto* b : { &droneBtn, &tuneBtn, &donBtn, &ronBtn, &specBtn, &ponBtn, &conBtn, &setBtn[0], &setBtn[1], &setBtn[2] })
+    for (auto* b : { &droneBtn, &tuneBtn, &soloBtn, &donBtn, &ronBtn, &specBtn, &ponBtn, &conBtn, &setBtn[0], &setBtn[1], &setBtn[2] })
     {
         if (! b->isVisible()) continue;
 
@@ -2643,6 +2665,7 @@ int ScattrPanel::hoveredControl() const
             return 30 + k;
 
     if (specBtn.isVisible() && specBtn.isMouseOver (true)) return 37;
+    if (soloBtn.isVisible() && soloBtn.isMouseOver (true)) return 42;
     if (ponBtn.isVisible() && ponBtn.isMouseOver (true))   return 38;
     if (conBtn.isVisible() && conBtn.isMouseOver (true))   return 39;
     if (eqView != nullptr && eqView->isVisible())
@@ -2657,7 +2680,7 @@ int ScattrPanel::hoveredControl() const
 // A small field note that rises into the footer, clear of every control
 void ScattrPanel::paintTip (juce::Graphics& g)
 {
-    if (tipAlpha < 0.01f || tipId < 0 || tipId >= 42) return;
+    if (tipAlpha < 0.01f || tipId < 0 || tipId >= 43) return;
 
     const float a = smooth01 (tipAlpha);
     const auto black = juce::Colours::black;

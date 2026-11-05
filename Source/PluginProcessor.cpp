@@ -110,6 +110,7 @@ juce::AudioProcessorValueTreeState::ParameterLayout makeLayout()
 
     // spectral gate (the pop-out window). Off by default.
     p.push_back (std::make_unique<juce::AudioParameterBool> (juce::ParameterID { "son", 1 }, "Spectral Gate On", false));
+    p.push_back (std::make_unique<juce::AudioParameterBool> (juce::ParameterID { "rsolo", 1 }, "Reverse Solo", false));   // the SOLO key above the reverse knob: hear only the reversed grains
     add ("sthr",     "Gate Cutoff Amplitude", -90.f, 0.f,  -44.4f, 1.f);   // bins above it are "strong", bins below it are "weak"
     add ("sbal",     "Gate Weak/Strong Balance", 0.f, 1.f,  0.7f,  1.f);   // 0 = only weak bins pass, 0.5 = all pass, 1 = only strong bins pass
     p.push_back (std::make_unique<juce::AudioParameterBool> (juce::ParameterID { "stilton", 1 }, "Gate Enable Tilt", false));
@@ -415,8 +416,12 @@ void ScattrProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::Midi
     }
 
     auto prm = [this] (const char* id) { return apvts.getRawParameterValue (id)->load(); };
-    const float sizeMs = prm ("size"), dens = prm ("dens"), speed = prm ("speed"), reverse = prm ("reverse"),
-                spray = prm ("spray"), holdS = prm ("hold"), gapS = prm ("gap"), cycleS = prm ("cycle"), randAmt = prm ("rand"), width = prm ("width");
+    // Reverse solo bypasses the grains section: seed size, rain, speed, scatter and pan spread fall back to their
+    // default values and the reverse blend is forced fully reversed, whatever those knobs are set to.
+    const bool soloOn = prm ("rsolo") > 0.5f;
+    const float sizeMs = soloOn ? 120.f : prm ("size"), dens = soloOn ? 25.f : prm ("dens"), speed = soloOn ? 1.f : prm ("speed"), reverse = prm ("reverse"),
+                spray = soloOn ? 0.1f : prm ("spray"), holdS = prm ("hold"), gapS = prm ("gap"), cycleS = prm ("cycle"), randAmt = prm ("rand"), width = soloOn ? 0.5f : prm ("width");
+    const bool reverseSolo = prm ("rsolo") > 0.5f;   // while on, the grain knobs are bypassed (see below)
     const bool active = prm ("drone") > 0.5f || notesHeld > 0;
     juce::ignoreUnused (cycleS);   // the cycle knob is retired; held keys play each sample through
     const bool keyMode = notesHeld > 0;   // a key is down: the sample plays through once, then waits for the next key
@@ -523,7 +528,7 @@ void ScattrProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::Midi
             slot->gr = std::sin (pan * halfPi) * 1.4142f * gain;
         };
 
-        const float rv = juce::jlimit (0.f, 1.f, reverse);
+        const float rv = reverseSolo ? 1.f : juce::jlimit (0.f, 1.f, reverse);   // solo: only the reversed grains, whatever the knob says
         if (rv < 0.999f) launch (false, std::cos (rv * halfPi));
         if (rv > 0.001f) launch (true,  std::sin (rv * halfPi));
         if (idx == cur) uiGrain.store ((float) (start / srcLen));
